@@ -1,0 +1,38 @@
+# Publish to the ComfyUI Registry on every push to main, on each tag, and on demand.
+#
+# Setup once:
+#   1. Create a publisher at https://registry.comfy.org and copy the @-suffix
+#      into pyproject.toml under [tool.comfy] PublisherId.
+#   2. Generate an API key on the Registry "Publisher Nodes" page.
+#   3. Add it to this repo's secrets as REGISTRY_ACCESS_TOKEN
+#      (Settings -> Secrets and variables -> Actions).
+#   4. Bump `version` in pyproject.toml before each release commit, OR cut a
+#      `v*` git tag — either trigger publishes the version recorded in
+#      pyproject.toml at that revision.
+#
+# Reference: https://docs.comfy.org/registry/publishing
+name: Publish to Comfy Registry
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - "pyproject.toml"
+    tags:
+      - "v*"
+  workflow_dispatch:
+
+jobs:
+  publish:
+    name: Publish node
+    runs-on: ubuntu-latest
+    if: ${{ github.repository_owner == 'am-pipeline-prod' }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          submodules: false
+
+      - name: Publish via Comfy-Org/publish-node-action
+        uses: Comfy-Org/publish-node-action@v1
+        with:
+          personal_access_token: ${{ secrets.REGISTRY_ACCESS_TOKEN }}

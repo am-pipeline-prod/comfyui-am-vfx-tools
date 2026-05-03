@@ -1,0 +1,30 @@
+# Python
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+.Python
+*.egg-info/
+.pytest_cache/
+build/
+dist/
+
+# OS / IDE
+.DS_Store
+Thumbs.db
+.vscode/
+.idea/
+*.swp
+*.swo
+
+# Local env / config
+.env
+.env.*
+
+# Syncthing artefacts
+.syncthing.*.tmp
+sync-conflict*
+
+# Local working state
+.claude/
+*.log

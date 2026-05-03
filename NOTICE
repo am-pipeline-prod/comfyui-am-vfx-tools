@@ -1,0 +1,32 @@
+AM Pipe — Media I/O for ComfyUI
+================================
+
+Portions of the OIIO read/write logic and frame-pattern handling in
+am_image_read.py / am_image_write.py / _core/image_backend.py are
+derived from sumitchatterjee13/nuke-nodes-comfyui:
+
+    https://github.com/sumitchatterjee13/nuke-nodes-comfyui
+
+Specifically: io_nodes.py read_image_oiio / write_image_oiio,
+parse_frame_pattern / expand_frame_pattern / detect_sequence (the
+latter rewritten as `detect_sequence_range` in `_core/sequence.py`,
+backed by `os.scandir` rather than `glob.glob` for NFS performance).
+
+The upstream pack is licensed under the MIT License (see
+Z:/prod/comfy-ui/custom-nodes/nuke-nodes/LICENSE for the original
+copyright notice).
+
+This is a code-import (not a GitHub fork). Substantial reworks include:
+
+  * OCIO 2.x ColorProcessor wired through the same code path as the
+    image backend (rather than the conventional sRGB/linear arithmetic
+    used upstream).
+  * AM Pipe path templating via am_pipe.grammar — the artist never
+    types a filename; the path is derived from the active workflow's
+    metadata + per-node parameters.
+  * Native file chooser shared with am-pipe-workfile-io via
+    am_pipe.filechooser (extracted in Phase 2, 2026-04-26).
+  * Sandbox-validated paths (rejects writes outside /_pipeline,
+    /_projects).
+
+— AM Pipe team, 2026-04-26.

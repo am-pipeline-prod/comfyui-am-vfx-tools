@@ -1,0 +1,46 @@
+[project]
+name = "comfyui-am-vfx-tools"
+version = "0.1.0"
+description = "VFX I/O & color toolkit for ComfyUI: image + video read/write (OpenImageIO + PyAV), OCIO 2.x color management, Nuke-style Grade, OpenCV reformat, render-farm-safe Seed, and frame-range slicing. 11 nodes."
+requires-python = ">=3.10"
+license = { text = "MIT" }
+authors = [{ name = "Adrian Meyer", email = "accounts@adrianmeyer.art" }]
+readme = "README.md"
+keywords = [
+    "comfyui", "vfx", "image-io", "video-io",
+    "ocio", "color-management", "exr", "openimageio", "pyav",
+    "reformat", "grade", "seed", "frame-range",
+]
+classifiers = [
+    "Development Status :: 4 - Beta",
+    "Intended Audience :: End Users/Desktop",
+    "License :: OSI Approved :: MIT License",
+    "Operating System :: OS Independent",
+    "Programming Language :: Python :: 3",
+    "Programming Language :: Python :: 3.10",
+    "Programming Language :: Python :: 3.11",
+    "Programming Language :: Python :: 3.12",
+    "Topic :: Multimedia :: Graphics",
+    "Topic :: Multimedia :: Video",
+]
+dependencies = [
+    "openimageio",
+    "opencolorio>=2.5.0",
+    "av>=14.0.0",
+    "imageio_ffmpeg>=0.5.0",
+    "opencv-python-headless>=4.10.0",
+]
+
+[project.urls]
+Homepage      = "https://github.com/am-pipeline-prod/comfyui-am-vfx-tools"
+Repository    = "https://github.com/am-pipeline-prod/comfyui-am-vfx-tools"
+Issues        = "https://github.com/am-pipeline-prod/comfyui-am-vfx-tools/issues"
+Documentation = "https://github.com/am-pipeline-prod/comfyui-am-vfx-tools#readme"
+
+# Minimum ComfyUI version. v0.3.48 (Aug 2025) is when the V3 schema +
+# `comfy_api.v0_0_2` (incl. node_replacement) shipped GA in core.
+[tool.comfy]
+ComfyUI = ">=0.3.48"
+PublisherId = ""  # TODO: fill with your registry.comfy.org publisher handle (e.g. "am-pipeline-prod") before first publish.
+DisplayName = "AM VFX Tools"
+Icon = ""        # Optional: URL to a square 400x400 SVG/PNG/JPG icon.

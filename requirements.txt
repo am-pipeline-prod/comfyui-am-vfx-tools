@@ -1,0 +1,52 @@
+# AM Pipe Media-IO — runtime Python deps.
+#
+# These are NOT auto-installed by ComfyUI when this custom-node is loaded;
+# they're installed during the ComfyUI bake (see
+# docs/comfyui-installation-runbook.md §7.3) so a fresh instance has them
+# the first time the package imports. Listed here as the durable manifest
+# of what this package needs at runtime.
+#
+# Versions are the pin we tested against on the workstation venv as of
+# Phase C (2026-04-27). Lower bounds are deliberately loose where we
+# don't depend on bleeding-edge API; ComfyUI's own torch pin (cu126,
+# §6 of the runbook) constrains the rest.
+
+# Image I/O — OpenImageIO Python bindings. EXR/DPX/TIFF/PNG/JPG/HDR/etc.
+# Used by AM Read Image / AM Write Image and the preview thumbnailer.
+# Note: pip wheel name is `openimageio`; the `import` name is
+# `OpenImageIO` (capitals). No version pin — wheels lag distro builds.
+openimageio
+
+# OCIO 2.x — color management. ACES Studio / CG configs ship as builtins
+# in OCIO 2.5+, which is the floor we need for the family-prefixed
+# dropdown + builtin fallback per the rework plan §2.2.
+opencolorio>=2.5.0
+
+# Video I/O — PyAV wraps libav (system ffmpeg). h264/h265/prores/dnxhr/vp9
+# encoders + frame-accurate seek. Used by AM Read Video / AM Write Video.
+#
+# Alpha-channel video support (added 2026-05-01) needs:
+#   * PyAV >= 11.0 for the `VideoFormat.has_alpha` attribute used to detect
+#     alpha-bearing pixfmts on read. Our pin (>=14.0.0) is well above that.
+#   * FFmpeg's `prores_ks` encoder with 4444 / 4444xq profiles, plus
+#     libswscale support for `yuva444p10le` <-> `rgba` conversions. Both
+#     are present in any FFmpeg >= 4.x; the binary wheels PyAV ships
+#     bundle a build that covers this. If a Linux distro forces a
+#     system-FFmpeg link via the `--no-binary av` install flag, verify
+#     `ffmpeg -h encoder=prores_ks` lists `4444` / `4444xq` profiles.
+av>=14.0.0
+
+# Bundled ffmpeg shim (small, used by some Comfy ecosystems as a fallback;
+# kept here so a thin Python-only ffmpeg path is available even on a
+# stripped instance).
+imageio_ffmpeg>=0.5.0
+
+# OpenCV — used by:
+#   * the preview thumbnailer's INTER_AREA downscale (`_core/preview.py`)
+#   * the reformat helper's full filter set
+#     (impulse / linear / cubic / Lanczos4 / area — `_core/reformat.py`)
+# Required, not optional. The reformat helper is on the hot path of
+# every IO node when reformat_mode != off, plus the standalone AMReformat
+# node. >=4.10 covers INTER_AREA + INTER_LANCZOS4, both stable since 3.0
+# but pinned against the ComfyUI workstation venv tested at Phase C.
+opencv-python-headless>=4.10.0
