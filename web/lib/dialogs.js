@@ -10,7 +10,6 @@ import { state, persist } from "./state.js";
 import {
   loadWorkflow, saveWorkflow, getRecent, clearRecent,
   nativeOpen, nativeSave, getNativeAvailable,
-  toProjectRootRelative,
 } from "./api.js";
 import { pickViaBrowser } from "./browser.js";
 
