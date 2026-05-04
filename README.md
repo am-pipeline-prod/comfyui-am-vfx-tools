@@ -228,12 +228,29 @@ Issues and PRs welcome on
 
 ## Credits
 
-* Image-IO codebase descends from a code-port of
-  [`sumitchatterjee13/nuke-nodes-comfyui`](https://github.com/sumitchatterjee13/nuke-nodes-comfyui)'s
-  `io_nodes.py` — the OIIO read/write idioms and frame-pattern handling
-  come from there. See `NOTICE`.
-* The HDR / Bit-depth / OCIO config-loader work that powers the OCIO
-  nodes is built on top of [OpenColorIO](https://opencolorio.org/) 2.5+.
+The OIIO read/write paths (`am_image_read.py` / `am_image_write.py` /
+`_core/image_backend.py`) and the frame-token handling (`_core/sequence.py`)
+started from
+[**`sumitchatterjee13/nuke-nodes-comfyui`**](https://github.com/sumitchatterjee13/nuke-nodes-comfyui)
+— that repo's `io_nodes.py` and its `parse_frame_pattern` /
+`expand_frame_pattern` / `detect_sequence` helpers gave us the OIIO +
+frame-token foundations. **Big thanks to Sumit Chatterjee** for putting
+the original work out under MIT.
+
+This pack has been **rewritten from scratch and extended substantially**
+on top of those foundations: full OCIO 2.x ColorProcessor pipeline,
+PyAV-backed video I/O with alpha-channel support, embedded ComfyUI
+workflow metadata round-trip, OpenCV reformat with five filters,
+Nuke-style Grade math, a render-farm-safe Seed registry, and the
+workfile-io subsystem (native OS file dialogs + sandbox-free workflow
+JSON management). See [`NOTICE`](NOTICE) for the full per-file
+attribution detail.
+
+Other dependencies powering the pack:
+* [OpenColorIO](https://opencolorio.org/) 2.5+ — color management.
+* [OpenImageIO](https://sites.google.com/site/openimageio/home) — image I/O.
+* [PyAV](https://pyav.org/) — video I/O.
+* [OpenCV](https://opencv.org/) — reformat filters.
 
 ## License
 

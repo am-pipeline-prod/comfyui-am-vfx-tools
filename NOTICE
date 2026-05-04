@@ -1,32 +1,42 @@
-AM Pipe — Media I/O for ComfyUI
-================================
+comfyui-am-vfx-tools — credits & attribution
+============================================
 
-Portions of the OIIO read/write logic and frame-pattern handling in
-am_image_read.py / am_image_write.py / _core/image_backend.py are
-derived from sumitchatterjee13/nuke-nodes-comfyui:
+The OIIO image read/write paths (`am_image_read.py`, `am_image_write.py`,
+`_core/image_backend.py`) and the frame-pattern handling (`_core/sequence.py`)
+started from sumitchatterjee13/nuke-nodes-comfyui:
 
     https://github.com/sumitchatterjee13/nuke-nodes-comfyui
 
-Specifically: io_nodes.py read_image_oiio / write_image_oiio,
-parse_frame_pattern / expand_frame_pattern / detect_sequence (the
-latter rewritten as `detect_sequence_range` in `_core/sequence.py`,
-backed by `os.scandir` rather than `glob.glob` for NFS performance).
+Specifically: that repo's `io_nodes.py` (`read_image_oiio` /
+`write_image_oiio`) and its `parse_frame_pattern` / `expand_frame_pattern`
+/ `detect_sequence` helpers gave us the OIIO + frame-token foundations.
 
-The upstream pack is licensed under the MIT License (see
-Z:/prod/comfy-ui/custom-nodes/nuke-nodes/LICENSE for the original
-copyright notice).
+The upstream pack is MIT-licensed; the original copyright notice applies
+to the derived portions.
 
-This is a code-import (not a GitHub fork). Substantial reworks include:
+This is a code-import (not a fork). The implementation has been rewritten
+from scratch and extended substantially:
 
-  * OCIO 2.x ColorProcessor wired through the same code path as the
-    image backend (rather than the conventional sRGB/linear arithmetic
-    used upstream).
-  * AM Pipe path templating via am_pipe.grammar — the artist never
-    types a filename; the path is derived from the active workflow's
-    metadata + per-node parameters.
-  * Native file chooser shared with am-pipe-workfile-io via
-    am_pipe.filechooser (extracted in Phase 2, 2026-04-26).
-  * Sandbox-validated paths (rejects writes outside /_pipeline,
-    /_projects).
-
-— AM Pipe team, 2026-04-26.
+  * Full OCIO 2.x ColorProcessor pipeline (built-in Studio / CG fallbacks,
+    layered config loader, family-grouped colorspace dropdowns) wired
+    through every read/write path.
+  * PyAV-backed video read/write (`am_video_read.py`, `am_video_write.py`,
+    `_core/video_backend.py`) — full codec coverage (h264 / h265 / prores /
+    dnxhr / vp9), alpha-bearing pixel formats on read+write where the
+    codec supports it (prores 4444), frame-accurate seek.
+  * `os.scandir`-based sequence scan (`detect_sequence_range`) replacing
+    the upstream `glob.glob` approach — significant performance win on
+    NFS / large directories.
+  * Embedded ComfyUI workflow metadata in EXR / PNG (`comfyui/prompt`,
+    `comfyui/workflow` keys) for round-trip recovery.
+  * Frame-mode / range / missing-frame-policy / edge-extrapolation
+    knobs not present upstream.
+  * OpenCV-backed reformat (`_core/reformat.py`) with five filters,
+    4-channel alpha-preserving.
+  * Nuke-style Grade math (`_core/grade.py`).
+  * Process-global seed registry (`_core/seed_registry.py`) addressing
+    a render-farm reproducibility issue documented at
+    comfyanonymous/ComfyUI#11905.
+  * Native OS file dialog + workfile-io workflow-management subsystem
+    (`_filechooser/`, `routes_workfile.py`, `web/workfile-io.js`) —
+    independent of the upstream and added here.

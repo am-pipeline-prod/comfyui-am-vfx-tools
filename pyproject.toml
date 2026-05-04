@@ -41,6 +41,6 @@ Documentation = "https://github.com/am-pipeline-prod/comfyui-am-vfx-tools#readme
 # `comfy_api.v0_0_2` (incl. node_replacement) shipped GA in core.
 [tool.comfy]
 ComfyUI = ">=0.3.48"
-PublisherId = ""  # TODO: fill with your registry.comfy.org publisher handle (e.g. "am-pipeline-prod") before first publish.
+PublisherId = "adrianmeyerart"
 DisplayName = "AM VFX Tools"
 Icon = ""        # Optional: URL to a square 400x400 SVG/PNG/JPG icon.
