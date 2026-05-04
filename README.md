@@ -7,14 +7,23 @@
 VFX I/O & color toolkit for ComfyUI: image + video read/write
 (OpenImageIO + PyAV), OCIO 2.x color management, Nuke-style Grade,
 OpenCV reformat, render-farm-safe Seed, and frame-range slicing.
-**11 nodes**, all under the **AM Pipe** category in the node menu.
+**11 nodes** under the **AM VFX Tools** category, plus a workfile-io
+menu (Save / Open / Recent / Incremental Save) for managing workflow
+JSON files outside ComfyUI's default folder.
 
 This pack is the public, generic subset of an internal studio pipeline.
 The internal pack (`am-pipe-comfy`) adds an "Auto" mode that resolves
 output paths from a studio-specific folder grammar; this public pack
 ships **Manual mode only** — pick a path explicitly via the `file_path`
-widget. Everything else (color management, frame ranges, codec coverage,
-reformat) is identical.
+widget (the 📂 Browse button gives you the OS-native file dialog).
+Everything else (color management, frame ranges, codec coverage,
+reformat, workfile-io) is identical.
+
+> **Maintenance:** This is a **self-serve** project. It works for me and
+> I'm sharing it as a starting point — feel free to use, fork, or copy
+> the code (MIT). I'm **not actively maintaining it**: bug reports + PRs
+> may sit unanswered, and feature requests may not land. If you depend
+> on it, plan to maintain your own fork.
 
 ## Nodes
 
@@ -59,7 +68,8 @@ cd comfyui-am-vfx-tools
 pip install -r requirements.txt
 ```
 
-Restart ComfyUI. You should see the **AM Pipe** category in the node menu.
+Restart ComfyUI. You should see the **AM VFX Tools** category in the
+node menu and an **AM VFX Tools** menu in the top menubar.
 
 ### Runtime dependencies
 
@@ -128,12 +138,61 @@ already configured to load that file. A setting under
 embedded ComfyUI workflows in their metadata, like an EXR previously
 saved by AM Write Image).
 
-## 📁 Open in Explorer
+## File-path buttons (Browse / Open in Explorer / Copy)
 
-Each AM Read / Write node has a 📁 button that reveals the resolved
-`file_path` in your OS file manager (Explorer / Finder / Nautilus /
-Dolphin). Walks up to the deepest existing parent if the resolved path
-doesn't exist yet (useful for write nodes targeting a not-yet-created dir).
+Each AM Read / Write node has three buttons stacked above `file_path`:
+
+* **📂 Browse** — opens the OS-native file dialog (zenity / kdialog /
+  yad on Linux, PowerShell on Windows). Picked path is written into
+  `file_path`. Sandbox-protected: the dialog only allows paths under
+  the configured roots (default: user home + `~/Documents`; override
+  via env `AM_VFX_TOOLS_FILECHOOSER_ROOTS`). Falls back gracefully
+  when no native tool is available.
+* **📁 Open in Explorer** — reveals the resolved `file_path` in your
+  OS file manager (Explorer / Finder / Nautilus / Dolphin). Walks up
+  to the deepest existing parent if the resolved path doesn't exist
+  yet (useful for write nodes targeting a not-yet-created dir).
+* **📋 Copy File Path** — copies the resolved `file_path` to the
+  system clipboard.
+
+## Workfile-io menu
+
+Adds an **AM VFX Tools** top-level menu replacing the stock File menu,
+with:
+
+* **Open…** (`Ctrl+Shift+O`)
+* **Open Recent…** (`Ctrl+Alt+O`)
+* **Save** (`Ctrl+Shift+S`)
+* **Save As…**
+* **Save Incremental** (`Ctrl+Alt+S`) — bumps the trailing `_v###`
+* **Open Current Folder**
+* **Copy Current Path**
+
+Save / Open prefer the **native OS file dialog** when available, fall
+back to a built-in browser dialog otherwise. All operations are
+sandboxed against the same configured roots as the Browse button.
+
+A toggle under **Settings → AM VFX Tools → Workfile IO → Prefer
+native OS file dialogs** lets you force the in-browser dialog even when
+native is available.
+
+## Configuring sandbox roots
+
+The Browse button + workfile-io operations are sandboxed against a list
+of allowed root directories. Default behaviour:
+
+* **Linux:** `~` + `~/Documents` (when it exists)
+* **Windows:** `~` + `~/Documents` (when it exists)
+
+Override by setting `AM_VFX_TOOLS_FILECHOOSER_ROOTS` in your ComfyUI
+launch environment:
+
+* **Linux / macOS:** `AM_VFX_TOOLS_FILECHOOSER_ROOTS=/work/projects:/scratch:/mnt/nas`
+* **Windows:** `AM_VFX_TOOLS_FILECHOOSER_ROOTS=D:\work;E:\projects;Z:\nas`
+
+Roots that don't exist on disk are silently dropped at startup with a
+warning in the ComfyUI log. If no valid roots remain, all I/O is
+rejected — set the env var or ensure the defaults exist.
 
 ## Development
 

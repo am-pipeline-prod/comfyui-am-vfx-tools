@@ -482,7 +482,7 @@ class AMVideoWrite:
         "Number of frames encoded into the container.",
     )
     FUNCTION = "execute"
-    CATEGORY = "AM Pipe"
+    CATEGORY = "AM VFX Tools"
     OUTPUT_NODE = True
 
     @classmethod
@@ -972,10 +972,15 @@ class AMVideoWrite:
         # Write._noop and the live `result` tuple above:
         # image, mask, resolved_path, info, width, height, frame_rate, frame_count.
         if image is None or not hasattr(image, "shape") or image.ndim < 3:
-            empty_mask = torch.zeros((1, 1, 1), dtype=torch.float32)
+            # Provide a real placeholder IMAGE so downstream consumers (e.g.
+            # stock SaveImage / SaveVideo, which slice `images[0].shape[1]`)
+            # don't crash with TypeError on None. 1x64x64x3 matches the
+            # read-side `_empty_result` convention.
+            placeholder = torch.zeros((1, 64, 64, 3), dtype=torch.float32)
+            empty_mask = torch.zeros((1, 64, 64), dtype=torch.float32)
             return {
                 "ui": {"text": ["(no write)"]},
-                "result": (image, empty_mask, "", "(no write)", 0, 0, 0.0, 0),
+                "result": (placeholder, empty_mask, "", "(no write)", 64, 64, 0.0, 0),
             }
         # image is a tensor (already promoted to (N, H, W, C) by the caller).
         h = int(image.shape[1] if image.ndim == 4 else image.shape[0])

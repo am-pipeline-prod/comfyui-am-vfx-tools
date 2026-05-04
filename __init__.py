@@ -2,15 +2,22 @@
 
 Eleven nodes for image / video read+write (OpenImageIO + PyAV), OCIO 2.x
 color management, Nuke-style Grade, OpenCV-backed reformat, render-farm-
-safe Seed, and frame-range slicing.
+safe Seed, and frame-range slicing — plus a workfile-io subsystem with
+native OS file dialogs for save/load of workflow JSON to absolute paths.
 
 The IO nodes are Manual-mode only — pick a path explicitly via the
 ``file_path`` widget, optionally with a ``####`` / ``%05d`` / ``$F4``
-frame token for sequences. The 🔍 Detect Range button on the read nodes
-auto-fills first/last frame from an on-disk scan; the 📁 Open in Explorer
-button on read/write nodes reveals the resolved path in your OS file
-manager; dropping a media file onto the canvas spawns an AM Read node
-configured to load it.
+frame token for sequences. Buttons on each node:
+  * 📂 Browse — native OS file dialog to pick a path under the configured
+    sandbox roots (default: user home + ~/Documents; override via env
+    ``AM_VFX_TOOLS_FILECHOOSER_ROOTS``).
+  * 🔍 Detect Range (read nodes) — auto-fills first/last from on-disk scan.
+  * 📁 Open in Explorer (read/write) — reveals path in OS file manager.
+  * 📋 Copy File Path — copies the resolved path to clipboard.
+
+The workfile-io menu adds Save / Open / Recent / Incremental Save
+commands for managing workflow JSON files outside ComfyUI's default
+folder. Sandbox-protected against the same configured roots.
 
 Project home: https://github.com/am-pipeline-prod/comfyui-am-vfx-tools
 """
@@ -19,9 +26,13 @@ from __future__ import annotations
 import logging
 import os
 
-# Side-effect import: routes.py registers HTTP handlers against
-# ``PromptServer.instance.routes`` at import time.
+# Side-effect imports: each routes module registers HTTP handlers against
+# ``PromptServer.instance.routes`` at import time. URL prefixes are
+# disjoint (`/am-vfx-tools/*` for media-IO + filechooser, plus
+# `/am-vfx-tools/workfile-io/*` for workfile-IO) so registration order
+# is irrelevant.
 from . import routes  # noqa: F401
+from . import routes_workfile  # noqa: F401
 
 from .am_frame_range import AMFrameRange
 from .am_grade import AMGrade, AMGradeRGB

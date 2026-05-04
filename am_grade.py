@@ -24,7 +24,7 @@ import torch
 
 from ._core.grade import grade_apply
 
-log = logging.getLogger("am_pipe.media-io.grade")
+log = logging.getLogger("am_vfx_tools.media-io.grade")
 
 
 def _split_alpha(image: torch.Tensor) -> Tuple[torch.Tensor, Optional[torch.Tensor]]:
@@ -70,7 +70,7 @@ class AMGrade:
         "Graded image batch (same shape and channels as the input).",
     )
     FUNCTION = "execute"
-    CATEGORY = "AM Pipe/Color"
+    CATEGORY = "AM VFX Tools/Color"
 
     def execute(
         self,
@@ -87,7 +87,7 @@ class AMGrade:
         image: Optional[torch.Tensor] = None,
     ):
         if image is None:
-            log.warning("[am_pipe/grade] `image` input is not wired — passing through")
+            log.warning("[am-vfx-tools/grade] `image` input is not wired — passing through")
             return (torch.zeros((1, 64, 64, 3), dtype=torch.float32),)
 
         rgb, alpha = _split_alpha(image)
@@ -158,7 +158,7 @@ class AMGradeRGB:
         "Graded image batch (same shape and channels as the input).",
     )
     FUNCTION = "execute"
-    CATEGORY = "AM Pipe/Color"
+    CATEGORY = "AM VFX Tools/Color"
 
     def execute(
         self,
@@ -175,7 +175,7 @@ class AMGradeRGB:
         image: Optional[torch.Tensor] = None,
     ):
         if image is None:
-            log.warning("[am_pipe/grade-rgb] `image` input is not wired — passing through")
+            log.warning("[am-vfx-tools/grade-rgb] `image` input is not wired — passing through")
             return (torch.zeros((1, 64, 64, 3), dtype=torch.float32),)
 
         rgb, alpha = _split_alpha(image)

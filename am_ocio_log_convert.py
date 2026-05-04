@@ -28,7 +28,7 @@ import torch
 
 from ._core import color
 
-log = logging.getLogger("am_pipe.media-io.ocio-log-convert")
+log = logging.getLogger("am_vfx_tools.media-io.ocio-log-convert")
 
 _LINEAR_ROLE = "scene_linear"
 _LOG_ROLE = "compositing_log"
@@ -90,7 +90,7 @@ class AMOCIOLogConvert:
         "curve (linear ↔ Cineon-like log per the active OCIO config).",
     )
     FUNCTION = "execute"
-    CATEGORY = "AM Pipe/Color"
+    CATEGORY = "AM VFX Tools/Color"
 
     def execute(
         self,
@@ -98,7 +98,7 @@ class AMOCIOLogConvert:
         image: Optional[torch.Tensor] = None,
     ):
         if image is None:
-            log.warning("[am_pipe/ocio-logconv] `image` input is not wired — passing through")
+            log.warning("[am-vfx-tools/ocio-logconv] `image` input is not wired — passing through")
             return (torch.zeros((1, 64, 64, 3), dtype=torch.float32),)
 
         src = _LOG_ROLE if reverse else _LINEAR_ROLE
@@ -109,7 +109,7 @@ class AMOCIOLogConvert:
             proc = color.ColorProcessor(src, dst)
         except Exception as e:
             log.warning(
-                "[am_pipe/ocio-logconv] cannot build %s -> %s (%s); "
+                "[am-vfx-tools/ocio-logconv] cannot build %s -> %s (%s); "
                 "pixels unchanged",
                 src, dst, e,
             )
@@ -125,7 +125,7 @@ class AMOCIOLogConvert:
                     proc.apply_inplace(out_np[i])
                 except Exception as e:
                     log.warning(
-                        "[am_pipe/ocio-logconv] OCIO apply failed on frame %d "
+                        "[am-vfx-tools/ocio-logconv] OCIO apply failed on frame %d "
                         "(%s); leaving frame untransformed",
                         i, e,
                     )

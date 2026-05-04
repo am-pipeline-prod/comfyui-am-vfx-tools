@@ -44,7 +44,7 @@ import logging
 import os
 from typing import List, Optional, Tuple
 
-log = logging.getLogger("am_pipe.media-io.color")
+log = logging.getLogger("am_vfx_tools.media-io.color")
 
 PASSTHROUGH = "raw"
 
@@ -81,7 +81,7 @@ def _try_builtin(name: str):
     try:
         return _ocio.Config.CreateFromBuiltinConfig(name)
     except Exception as e:
-        log.info("[am_pipe/color] builtin %s not available: %s", name, e)
+        log.info("[am-vfx-tools/color] builtin %s not available: %s", name, e)
         return None
 
 
@@ -105,13 +105,13 @@ def _load_config():
             _CONFIG = cfg
             _CONFIG_SOURCE = ocio_env
             log.info(
-                "[am_pipe/color] loaded $OCIO=%s (%d colorspaces)",
+                "[am-vfx-tools/color] loaded $OCIO=%s (%d colorspaces)",
                 ocio_env, len(list(cfg.getColorSpaces())),
             )
             return _CONFIG
         except Exception as e:
             log.warning(
-                "[am_pipe/color] $OCIO=%s failed to load (%s); falling back",
+                "[am-vfx-tools/color] $OCIO=%s failed to load (%s); falling back",
                 ocio_env, e,
             )
 
@@ -121,7 +121,7 @@ def _load_config():
         _CONFIG = cfg
         _CONFIG_SOURCE = f"(builtin: {_BUILTIN_STUDIO})"
         log.info(
-            "[am_pipe/color] loaded builtin %s (%d colorspaces)",
+            "[am-vfx-tools/color] loaded builtin %s (%d colorspaces)",
             _BUILTIN_STUDIO, len(list(cfg.getColorSpaces())),
         )
         return _CONFIG
@@ -132,7 +132,7 @@ def _load_config():
         _CONFIG = cfg
         _CONFIG_SOURCE = f"(builtin: {_BUILTIN_CG})"
         log.info(
-            "[am_pipe/color] loaded builtin %s (%d colorspaces)",
+            "[am-vfx-tools/color] loaded builtin %s (%d colorspaces)",
             _BUILTIN_CG, len(list(cfg.getColorSpaces())),
         )
         return _CONFIG
@@ -143,7 +143,7 @@ def _load_config():
         _CONFIG = cfg
         _CONFIG_SOURCE = "(raw stub)"
         log.warning(
-            "[am_pipe/color] no usable OCIO config found — falling back to "
+            "[am-vfx-tools/color] no usable OCIO config found — falling back to "
             "raw stub (identity transforms only)"
         )
         return _CONFIG

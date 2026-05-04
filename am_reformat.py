@@ -19,7 +19,7 @@ import torch
 
 from ._core import preview, reformat
 
-log = logging.getLogger("am_pipe.media-io.reformat-node")
+log = logging.getLogger("am_vfx_tools.media-io.reformat-node")
 
 
 class AMReformat:
@@ -86,7 +86,7 @@ class AMReformat:
         "One-line summary of the reformat applied.",
     )
     FUNCTION = "execute"
-    CATEGORY = "AM Pipe"
+    CATEGORY = "AM VFX Tools"
     OUTPUT_NODE = True
 
     def execute(
@@ -132,7 +132,7 @@ class AMReformat:
                 mask_arr = mask.detach().cpu().numpy().astype(np.float32, copy=False)
                 arr = reformat.combine_image_mask(arr, mask_arr)
             except Exception as e:
-                log.warning("[am_pipe/reformat] mask combine failed: %s; ignoring mask", e)
+                log.warning("[am-vfx-tools/reformat] mask combine failed: %s; ignoring mask", e)
 
         try:
             out_arr = reformat.reformat_array(
@@ -147,7 +147,7 @@ class AMReformat:
                 output_dtype=output_dtype,
             )
         except Exception as e:
-            log.warning("[am_pipe/reformat] reformat failed: %s; passing input through", e)
+            log.warning("[am-vfx-tools/reformat] reformat failed: %s; passing input through", e)
             out_arr = arr
 
         # Split post-reformat into IMAGE (RGB) + MASK (1 - alpha) for the
@@ -194,7 +194,7 @@ class AMReformat:
                 filename_hint="reformat",
             )
         except Exception as e:
-            log.warning("[am_pipe/reformat] preview generation failed: %s", e)
+            log.warning("[am-vfx-tools/reformat] preview generation failed: %s", e)
             return {"text": [info_str]}
         if not payload.get("images"):
             return {"text": [info_str]}

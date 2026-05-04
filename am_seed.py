@@ -72,7 +72,7 @@ from typing import Any, Dict, Optional, Tuple
 
 from ._core import seed_registry
 
-log = logging.getLogger("am_pipe.media-io.seed")
+log = logging.getLogger("am_vfx_tools.media-io.seed")
 
 
 # `PromptServer.instance.send_sync(event, data)` is how custom nodes push
@@ -283,7 +283,7 @@ class AMSeed:
         "the process-global registry (their `seed` widget at -1 = look up).",
     )
     FUNCTION     = "execute"
-    CATEGORY     = "AM Pipe/Util"
+    CATEGORY     = "AM VFX Tools/Util"
     OUTPUT_NODE  = True  # always execute, even when the seed isn't wired
 
     @classmethod

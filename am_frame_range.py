@@ -18,7 +18,7 @@ from typing import Optional
 
 import torch
 
-log = logging.getLogger("am_pipe.media-io.frame-range")
+log = logging.getLogger("am_vfx_tools.media-io.frame-range")
 
 FRAME_MODE_SINGLE = "single"
 FRAME_MODE_RANGE  = "range"
@@ -72,7 +72,7 @@ class AMFrameRange:
         "(N,H,W,C) in range mode, identical to the input in all mode.",
     )
     FUNCTION = "execute"
-    CATEGORY = "AM Pipe/Util"
+    CATEGORY = "AM VFX Tools/Util"
 
     def execute(
         self,
@@ -82,7 +82,7 @@ class AMFrameRange:
         image: Optional[torch.Tensor] = None,
     ):
         if image is None:
-            log.warning("[am_pipe/frame-range] `image` input is not wired — passing through black")
+            log.warning("[am-vfx-tools/frame-range] `image` input is not wired — passing through black")
             return (torch.zeros((1, 64, 64, 3), dtype=torch.float32),)
 
         if image.ndim == 3:

@@ -25,7 +25,7 @@ from __future__ import annotations
 
 import logging
 
-log = logging.getLogger("am_pipe.media-io.replacements")
+log = logging.getLogger("am_vfx_tools.media-io.replacements")
 
 try:
     from comfy_api.v0_0_2 import ComfyExtension, io  # type: ignore[import-not-found]

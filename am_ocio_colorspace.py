@@ -24,7 +24,7 @@ import torch
 
 from ._core import color
 
-log = logging.getLogger("am_pipe.media-io.ocio-colorspace")
+log = logging.getLogger("am_vfx_tools.media-io.ocio-colorspace")
 
 
 class AMOCIOColorspace:
@@ -66,7 +66,7 @@ class AMOCIOColorspace:
         "Transformed image batch (same shape and channels as the input).",
     )
     FUNCTION = "execute"
-    CATEGORY = "AM Pipe/Color"
+    CATEGORY = "AM VFX Tools/Color"
 
     def execute(
         self,
@@ -75,7 +75,7 @@ class AMOCIOColorspace:
         image: Optional[torch.Tensor] = None,
     ):
         if image is None:
-            log.warning("[am_pipe/ocio-cs] `image` input is not wired — passing through")
+            log.warning("[am-vfx-tools/ocio-cs] `image` input is not wired — passing through")
             return (torch.zeros((1, 64, 64, 3), dtype=torch.float32),)
 
         src = color.resolve_choice_to_cs(input_colorspace)
@@ -99,14 +99,14 @@ class AMOCIOColorspace:
                             proc.apply_inplace(out_np[i])
                         except Exception as e:
                             log.warning(
-                                "[am_pipe/ocio-cs] OCIO apply failed on frame %d "
+                                "[am-vfx-tools/ocio-cs] OCIO apply failed on frame %d "
                                 "(%s); leaving frame untransformed",
                                 i, e,
                             )
                     out_image = torch.from_numpy(out_np).to(image.device)
             except Exception as e:
                 log.warning(
-                    "[am_pipe/ocio-cs] cannot build %s -> %s (%s); pixels unchanged",
+                    "[am-vfx-tools/ocio-cs] cannot build %s -> %s (%s); pixels unchanged",
                     src, dst, e,
                 )
 

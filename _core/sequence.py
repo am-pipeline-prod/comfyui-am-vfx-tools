@@ -31,7 +31,7 @@ import re
 from dataclasses import dataclass, field
 from typing import FrozenSet, Optional, Tuple
 
-log = logging.getLogger("am_pipe.media-io.sequence")
+log = logging.getLogger("am_vfx_tools.media-io.sequence")
 
 
 _PRINTF_RE = re.compile(r"%0?(\d*)d")
@@ -183,13 +183,13 @@ def detect_sequence_range(filepath: str, *, scan_dir: bool = True) -> SequenceIn
                 except ValueError:
                     continue
     except (FileNotFoundError, NotADirectoryError) as e:
-        log.warning("[am_pipe/sequence] directory missing for %s: %s", pattern, e)
+        log.warning("[am-vfx-tools/sequence] directory missing for %s: %s", pattern, e)
         return SequenceInfo(
             pattern=pattern, padding=padding, first=None, last=None,
             present_set=frozenset(),
         )
     except OSError as e:
-        log.warning("[am_pipe/sequence] scandir failed for %s: %s", directory, e)
+        log.warning("[am-vfx-tools/sequence] scandir failed for %s: %s", directory, e)
         return SequenceInfo(
             pattern=pattern, padding=padding, first=None, last=None,
             present_set=frozenset(),

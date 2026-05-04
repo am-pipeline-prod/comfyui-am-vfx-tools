@@ -23,7 +23,7 @@ import numpy as np
 
 from . import color as _color
 
-log = logging.getLogger("am_pipe.media-io.preview")
+log = logging.getLogger("am_vfx_tools.media-io.preview")
 
 _THUMB_MAX_EDGE = 256
 _TARGET_DISPLAY = "sRGB - Display"
@@ -88,7 +88,7 @@ def _to_display_referred_uint8(
                 proc.apply_inplace(pixels)
         except Exception as e:
             log.warning(
-                "[am_pipe/preview] OCIO %s -> %s failed (%s); thumbnail "
+                "[am-vfx-tools/preview] OCIO %s -> %s failed (%s); thumbnail "
                 "may look wrong",
                 src, _TARGET_DISPLAY, e,
             )
@@ -130,7 +130,7 @@ def create_single_preview(
     if arr.ndim == 3:
         arr = arr[None, ...]
     if arr.ndim != 4:
-        log.warning("[am_pipe/preview] unexpected tensor shape %s", arr.shape)
+        log.warning("[am-vfx-tools/preview] unexpected tensor shape %s", arr.shape)
         return {"images": []}
 
     n = arr.shape[0]
@@ -166,12 +166,12 @@ def create_single_preview(
             create_directories=True,
         )
     except Exception as e:
-        log.warning("[am_pipe/preview] OIIO write failed (%s); trying PIL", e)
+        log.warning("[am-vfx-tools/preview] OIIO write failed (%s); trying PIL", e)
         try:
             from PIL import Image  # type: ignore
             Image.fromarray(rgb_u8, mode="RGB").save(out_path, format="PNG")
         except Exception as e2:
-            log.error("[am_pipe/preview] PIL write also failed: %s", e2)
+            log.error("[am-vfx-tools/preview] PIL write also failed: %s", e2)
             return {"images": []}
 
     return {

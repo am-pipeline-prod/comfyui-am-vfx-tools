@@ -32,7 +32,7 @@ from typing import Dict, Optional, Tuple
 
 import numpy as np
 
-log = logging.getLogger("am_pipe.media-io.reformat")
+log = logging.getLogger("am_vfx_tools.media-io.reformat")
 
 
 # ---------------------------------------------------------------------------
@@ -569,7 +569,7 @@ def combine_image_mask(
             )
         import cv2  # type: ignore
         log.info(
-            "[am_pipe/reformat] auto-resizing mask from %dx%d to %dx%d (cubic) "
+            "[am-vfx-tools/reformat] auto-resizing mask from %dx%d to %dx%d (cubic) "
             "to match image dims",
             mask_w, mask_h, img_w, img_h,
         )

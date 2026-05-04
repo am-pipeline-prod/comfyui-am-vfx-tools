@@ -1,7 +1,7 @@
 // AM VFX Tools — frontend extension.
 //
 // Adds:
-//   * Width-patching for AM nodes — every AM Pipe class spawns at the
+//   * Width-patching for AM nodes — every AM VFX Tools class spawns at the
 //     same fixed canvas width (350 px) so the node graph has a uniform
 //     visual rhythm regardless of LiteGraph's per-widget auto-sizing.
 //   * "🔍 Detect Range" button on AM Read Image AND AM Read Video. Posts
@@ -33,6 +33,9 @@ import { api } from "/scripts/api.js";
 const DETECT_RANGE_URL   = "/am-vfx-tools/detect-range";
 const DROP_URL           = "/am-vfx-tools/drop";
 const OPEN_EXPLORER_URL  = "/am-vfx-tools/open-in-explorer";
+const ROOTS_URL          = "/am-vfx-tools/roots";
+const NATIVE_OPEN_URL    = "/am-vfx-tools/native-dialog/open";
+const NATIVE_SAVE_URL    = "/am-vfx-tools/native-dialog/save";
 
 // Setting controlling what happens when the user drops a media file onto
 // the canvas. Default `media` reverses stock ComfyUI's behavior: instead
@@ -65,7 +68,7 @@ const TARGET_NODES = new Map([
   ["AMVideoWrite", { kind: "save", label: "AM Write Video"          }],
 ]);
 
-// All AM Pipe nodes spawn at the same fixed width on fresh creation —
+// All AM VFX Tools nodes spawn at the same fixed width on fresh creation —
 // LiteGraph auto-sizes per-node based on widget content, so different
 // AM nodes end up at different widths (200-280 px range), and even a
 // min-width bump leaves them inconsistent because wider nodes stay at
@@ -104,7 +107,7 @@ const TARGET_NODE_WIDTH = 350;
 //      current displayed size is correct without waiting for the
 //      next computeSize() call.
 //
-// The `__am_pipe_width_patched__` flag also serves as the "this is a
+// The `__am_vfx_tools_width_patched__` flag also serves as the "this is a
 // fresh node we own" signal: saved-graph nodes go through
 // `loadedGraphNode` (not `nodeCreated`), so the flag is never set on
 // them, and `stripSeedControlWidget`'s reapply early-returns —
@@ -116,7 +119,7 @@ function applyAmPipeWidth(node) {
 
     // (1) Patch computeSize once. Wraps the original so the height
     // stays naturally auto-computed; only the width is locked.
-    if (!node.__am_pipe_width_patched__) {
+    if (!node.__am_vfx_tools_width_patched__) {
       const origCompute = node.computeSize;
       node.computeSize = function (...args) {
         let h = 100;
@@ -126,7 +129,7 @@ function applyAmPipeWidth(node) {
         } catch (_e) { /* fall through with default height */ }
         return [TARGET_NODE_WIDTH, h];
       };
-      node.__am_pipe_width_patched__ = true;
+      node.__am_vfx_tools_width_patched__ = true;
     }
 
     // (2) Set current width.
@@ -147,7 +150,7 @@ function applyAmPipeWidth(node) {
 // computeSize patch alone catches it for fresh nodes, but this is a
 // belt-and-suspenders direct re-set.
 function reapplyAmPipeWidthIfFresh(node) {
-  if (!node?.__am_pipe_width_patched__) return;
+  if (!node?.__am_vfx_tools_width_patched__) return;
   try {
     if (!Array.isArray(node.size) || node.size.length < 2) return;
     if (node.size[0] !== TARGET_NODE_WIDTH) {
@@ -509,6 +512,201 @@ function addOpenInExplorerButton(node, nodeName) {
   moveWidgetAbove(node, button, "file_path");
 }
 
+
+// ---------------------------------------------------------------------------
+// Browse button + Copy File Path — port of the internal pack's
+// `addBrowseButton` / `addCopyPathButton`. Browse calls the vendored
+// filechooser routes (`/am-vfx-tools/{roots, native-dialog/open|save}`)
+// for native OS dialog spawn; Copy is pure frontend (clipboard API +
+// legacy textarea fallback).
+// ---------------------------------------------------------------------------
+
+let _rootsCache = null;
+async function fetchRoots() {
+  if (_rootsCache) return _rootsCache;
+  try {
+    const r = await fetch(ROOTS_URL);
+    if (!r.ok) return [];
+    const j = await r.json();
+    _rootsCache = Array.isArray(j.roots) ? j.roots : [];
+    return _rootsCache;
+  } catch (_e) { return []; }
+}
+
+async function _parseMaybeJson(response) {
+  try { return await response.json(); }
+  catch (_e) { return null; }
+}
+
+async function callNativeOpen(default_dir, title) {
+  const r = await fetch(NATIVE_OPEN_URL, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({
+      title: title || "AM Read — open",
+      default_dir: default_dir || null,
+    }),
+  });
+  const body = await _parseMaybeJson(r);
+  if (!r.ok) {
+    const err = new Error(body?.message || `native dialog open: HTTP ${r.status}`);
+    err.body = body; err.status = r.status;
+    throw err;
+  }
+  return body || {};
+}
+
+async function callNativeSave(default_dir, default_filename, title) {
+  const r = await fetch(NATIVE_SAVE_URL, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({
+      title: title || "AM Write — choose folder",
+      default_dir: default_dir || null,
+      default_filename: default_filename || null,
+    }),
+  });
+  const body = await _parseMaybeJson(r);
+  if (!r.ok) {
+    const err = new Error(body?.message || `native dialog save: HTTP ${r.status}`);
+    err.body = body; err.status = r.status;
+    throw err;
+  }
+  return body || {};
+}
+
+function _dirnameOf(p) {
+  if (!p) return null;
+  const idx = Math.max(p.lastIndexOf("/"), p.lastIndexOf("\\"));
+  if (idx <= 0) return p;
+  if (p[idx - 1] === ":") return p.slice(0, idx + 1);
+  return p.slice(0, idx);
+}
+
+async function defaultDirFor(widget) {
+  // Prefer the directory portion of the current widget value. Falls back
+  // to the first configured sandbox root so the dialog opens somewhere
+  // the server is willing to accept.
+  const v = (widget && widget.value) || "";
+  if (v) {
+    const d = _dirnameOf(v);
+    if (d) return d;
+  }
+  const roots = await fetchRoots();
+  return roots[0] || null;
+}
+
+function defaultFilenameFor(nodeName) {
+  switch (nodeName) {
+    case "AMImageWrite": return "image.png";
+    case "AMVideoWrite": return "video.mov";
+    default:             return "";
+  }
+}
+
+async function copyToClipboard(text) {
+  if (navigator?.clipboard?.writeText) {
+    try {
+      await navigator.clipboard.writeText(text);
+      return true;
+    } catch (e) {
+      console.info("[am-vfx-tools] navigator.clipboard.writeText failed; trying legacy fallback:", e);
+    }
+  }
+  try {
+    const ta = document.createElement("textarea");
+    ta.value = text;
+    ta.setAttribute("readonly", "");
+    ta.style.position = "fixed";
+    ta.style.top = "-1000px";
+    ta.style.opacity = "0";
+    document.body.appendChild(ta);
+    ta.select();
+    const ok = document.execCommand("copy");
+    document.body.removeChild(ta);
+    return Boolean(ok);
+  } catch (e) {
+    console.error("[am-vfx-tools] legacy clipboard fallback failed:", e);
+    return false;
+  }
+}
+
+function addBrowseButton(node, nodeName, spec /* { kind, label } */) {
+  const widget = findWidget(node, "file_path");
+  if (!widget) return;
+
+  if (node.__am_browse_added__) return;
+  node.__am_browse_added__ = true;
+
+  const button = node.addWidget("button", "📂 Browse", "browse", async () => {
+    try {
+      const dir = await defaultDirFor(widget);
+      const j = spec.kind === "open"
+        ? await callNativeOpen(dir, spec.label)
+        : await callNativeSave(dir, widget.value || defaultFilenameFor(nodeName), spec.label);
+      if (j && j.path) {
+        // Public pack stores the absolute path verbatim — no project-root
+        // tokenisation (that's an internal-pipeline concern).
+        widget.value = j.path;
+        widget.callback?.(j.path);
+        node.setDirtyCanvas(true, true);
+      } else if (j && j.cancelled) {
+        // user hit Cancel — quietly do nothing
+      } else if (j && j.fallback) {
+        alert(
+          "AM VFX Tools: native file dialog unavailable on this server " +
+          `(reason: ${j.fallback}). Type the path into file_path manually.`
+        );
+      }
+    } catch (e) {
+      console.error("[am-vfx-tools] browse failed:", e);
+      // Sandbox rejection is the most likely 4xx — surface a friendly message.
+      if (e.body?.message) {
+        alert(`AM VFX Tools: ${e.body.message}`);
+      } else {
+        alert("AM VFX Tools: browse failed — " + e.message);
+      }
+    }
+  });
+
+  // Browse sits directly above file_path. Order at runtime is established
+  // by the registration order in `beforeRegisterNodeDef`.
+  moveWidgetAbove(node, button, "file_path");
+}
+
+function addCopyPathButton(node, nodeName) {
+  const widget = findWidget(node, "file_path");
+  if (!widget) return;
+
+  if (node.__am_copy_path_added__) return;
+  node.__am_copy_path_added__ = true;
+
+  const button = node.addWidget("button", "📋 Copy File Path", "copy_path", async () => {
+    try {
+      const path = (widget && widget.value) || "";
+      if (!path) {
+        alert("AM VFX Tools: file_path is empty — nothing to copy.");
+        return;
+      }
+      const ok = await copyToClipboard(path);
+      if (ok) {
+        console.info(`[am-vfx-tools] copied to clipboard: ${path}`);
+      } else {
+        alert(
+          "AM VFX Tools: clipboard copy failed. Your browser may be blocking " +
+          "clipboard access on non-HTTPS origins. Path:\n\n" + path
+        );
+      }
+    } catch (e) {
+      console.error("[am-vfx-tools] copy file path failed:", e);
+      alert("AM VFX Tools: copy file path failed — " + e.message);
+    }
+  });
+
+  moveWidgetAbove(node, button, "file_path");
+}
+
+
 function addDetectRangeButton(node) {
   const filePathWidget = findWidget(node, "file_path");
   if (!filePathWidget) return;
@@ -590,7 +788,7 @@ function stripSeedControlWidget(node) {
     if (idx >= 0) node.widgets.splice(idx, 1);
     node.__am_seed_control_stripped__ = true;
     // Recompute the node's height now that a widget is gone. For
-    // fresh AM Pipe nodes, `node.computeSize` has been patched by
+    // fresh AM VFX Tools nodes, `node.computeSize` has been patched by
     // `applyAmPipeWidth` (called from `nodeCreated`) to return the
     // forced target width — so this `setSize(computeSize())` call
     // preserves our width while letting the height shrink to the
@@ -646,7 +844,7 @@ app.registerExtension({
   // instantiation). NOT called for saved-graph loads — those go through
   // `loadedGraphNode` and get their saved size restored automatically,
   // so this resize only affects "new" nodes the artist drops onto an
-  // empty canvas. Forces a fixed width on EVERY AM Pipe class (not a
+  // empty canvas. Forces a fixed width on EVERY AM VFX Tools class (not a
   // min-bump) so they all spawn at the same size regardless of their
   // auto-computed widget width. Width is also re-applied from inside
   // `stripSeedControlWidget` (which fires on a setTimeout AFTER this
@@ -710,10 +908,24 @@ app.registerExtension({
     const onCreated = nodeType.prototype.onNodeCreated;
     nodeType.prototype.onNodeCreated = function () {
       const r = onCreated ? onCreated.apply(this, arguments) : undefined;
+      // Registration order matters — moveWidgetAbove inserts each button
+      // directly above file_path, so the FIRST registered button ends up
+      // at the TOP. Final visual order top→bottom:
+      //   Browse → Open in Explorer → Copy File Path → file_path.
+      try {
+        if (spec) addBrowseButton(this, nodeData.name, spec);
+      } catch (e) {
+        console.error("[am-vfx-tools] could not add Browse button:", e);
+      }
       try {
         if (spec) addOpenInExplorerButton(this, nodeData.name);
       } catch (e) {
         console.error("[am-vfx-tools] could not add Open-in-Explorer button:", e);
+      }
+      try {
+        if (spec) addCopyPathButton(this, nodeData.name);
+      } catch (e) {
+        console.error("[am-vfx-tools] could not add Copy File Path button:", e);
       }
       try {
         if (wantsDetectRange) addDetectRangeButton(this);

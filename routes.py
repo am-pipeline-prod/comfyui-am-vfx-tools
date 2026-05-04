@@ -28,8 +28,15 @@ Image / AM Write Video nodes:
   literal path doesn't exist yet (e.g. fresh write target before any
   frames have rendered).
 
-All routes trust the path the JS posts — there is no sandbox layer in
-this public pack, paths are passed through verbatim.
+The three media-IO routes above (`detect-range`, `drop`, `open-in-explorer`)
+trust the path the JS posts — paths are passed through verbatim.
+
+The filechooser routes (`roots`, `list`, `mkdir`, `reveal`,
+`native-dialog/{available,open,save}`) registered at the bottom of this
+module DO sandbox: they only allow paths under the configured roots
+(default: user home + `~/Documents`; override via the
+`AM_VFX_TOOLS_FILECHOOSER_ROOTS` env var). These back the 📂 Browse
+button on the AM Read / Write nodes and the workfile-io menu.
 """
 from __future__ import annotations
 
@@ -45,6 +52,7 @@ from aiohttp import web
 from server import PromptServer
 
 from ._core import sequence
+from ._filechooser.server import register_filechooser_routes
 
 log = logging.getLogger("am_vfx_tools.routes")
 
@@ -671,6 +679,31 @@ async def _open_in_explorer(request: web.Request):
 
 
 log.info(
-    "[am_vfx_tools] routes registered at /am-vfx-tools/* "
+    "[am_vfx_tools] media-IO routes registered at /am-vfx-tools/* "
     "(POST /detect-range, POST /drop, POST /open-in-explorer)"
+)
+
+
+# ---------------------------------------------------------------------------
+# Filechooser routes — backs the 📂 Browse button on the AM Read / Write
+# nodes and the workfile-io menu. Sandboxed against the configured roots
+# (see _filechooser/_config.py — defaults to user home + ~/Documents,
+# override via AM_VFX_TOOLS_FILECHOOSER_ROOTS env).
+# ---------------------------------------------------------------------------
+
+# AM Read accepts any image OIIO understands. We don't constrain
+# must_have_suffix — the AM Read node validates the extension after the
+# user picks one (so the dialog can show jpg + exr + tif together).
+register_filechooser_routes(
+    routes,
+    prefix="/am-vfx-tools",
+    must_have_suffix=None,
+    open_title="AM Read — open",
+    save_title="AM Write — choose folder",
+)
+
+log.info(
+    "[am_vfx_tools] filechooser routes registered at /am-vfx-tools/* "
+    "(GET /roots, /list, /native-dialog/available; POST /mkdir, /reveal, "
+    "/native-dialog/{open,save})"
 )

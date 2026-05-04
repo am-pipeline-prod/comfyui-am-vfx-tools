@@ -247,7 +247,7 @@ class AMImageRead:
         "Number of frames in the IMAGE batch.",
     )
     FUNCTION = "execute"
-    CATEGORY = "AM Pipe"
+    CATEGORY = "AM VFX Tools"
     OUTPUT_NODE = True
 
     @classmethod

@@ -520,7 +520,7 @@ class AMImageWrite:
         "Number of files written.",
     )
     FUNCTION = "execute"
-    CATEGORY = "AM Pipe"
+    CATEGORY = "AM VFX Tools"
     OUTPUT_NODE = True
 
     @classmethod
@@ -1061,7 +1061,8 @@ class AMImageWrite:
 
     def _noop(self, image):
         # image is a tensor (already promoted to (N, H, W, C) by the
-        # caller) — or None when both image and video inputs are unwired.
+        # caller) — or None when both image and video inputs are unwired,
+        # or when read-only mode failed to load any frames.
         # Result tuple shape:
         #   image, mask, resolved_path, info, width, height, frame_rate, frame_count
         if hasattr(image, "shape") and len(image.shape) >= 3:
@@ -1069,7 +1070,12 @@ class AMImageWrite:
             w = int(image.shape[2] if image.ndim == 4 else image.shape[1])
             n = int(image.shape[0]) if image.ndim == 4 else 1
         else:
-            h, w, n = 0, 0, 1
+            # Provide a real placeholder IMAGE so downstream consumers (e.g.
+            # stock SaveImage at nodes.py save_images, which slices
+            # `images[0].shape[1]`) don't crash with TypeError on None.
+            # 1x64x64x3 matches the read-side `_empty_result` convention.
+            h, w, n = 64, 64, 1
+            image = torch.zeros((1, 64, 64, 3), dtype=torch.float32)
         # Empty MASK = zeros (stock ComfyUI: nothing to inpaint).
         mask_stub = torch.zeros(
             (n, max(h, 1), max(w, 1)), dtype=torch.float32,

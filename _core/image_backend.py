@@ -22,7 +22,7 @@ import os
 from dataclasses import dataclass, field
 from typing import Any, Dict, Optional
 
-log = logging.getLogger("am_pipe.media-io.image")
+log = logging.getLogger("am_vfx_tools.media-io.image")
 
 
 try:
@@ -330,7 +330,7 @@ def _embed_workflow_metadata(
             try:
                 spec.attribute(str(k), str(v))
             except Exception:
-                log.warning("[am_pipe/image] skipped workflow attr %r", k)
+                log.warning("[am-vfx-tools/image] skipped workflow attr %r", k)
         return
 
     if ext in _JSON_PACKED_METADATA_FORMATS:
@@ -343,7 +343,7 @@ def _embed_workflow_metadata(
             payload = json.dumps(trimmed, separators=(",", ":"))
             if len(payload) > _PACKED_DESCRIPTION_LIMIT:
                 log.warning(
-                    "[am_pipe/image] workflow metadata too large for %s "
+                    "[am-vfx-tools/image] workflow metadata too large for %s "
                     "ImageDescription tag (%d B > %d B even after dropping "
                     "%s); skipping embed for this file. Switch to PNG/EXR "
                     "to keep the full workflow.",
@@ -352,7 +352,7 @@ def _embed_workflow_metadata(
                 )
                 return
             log.info(
-                "[am_pipe/image] %s ImageDescription too small for full "
+                "[am-vfx-tools/image] %s ImageDescription too small for full "
                 "payload — embedded structured fields only (dropped %s)",
                 ext, _LARGE_METADATA_KEYS,
             )
@@ -360,14 +360,14 @@ def _embed_workflow_metadata(
             spec.attribute("ImageDescription", payload)
         except Exception:
             log.warning(
-                "[am_pipe/image] could not set ImageDescription on %s",
+                "[am-vfx-tools/image] could not set ImageDescription on %s",
                 filepath,
             )
         return
 
     # Unsupported extension — nothing to do.
     log.debug(
-        "[am_pipe/image] workflow metadata not embedded — extension %r "
+        "[am-vfx-tools/image] workflow metadata not embedded — extension %r "
         "is not in the supported set (PNG/EXR/TIF/JPG)",
         ext,
     )
@@ -427,12 +427,12 @@ def _embed_frame_rate(spec: Any, filepath: str, fps: float) -> None:
                 # strings too.
                 spec.attribute("framesPerSecond", fps_str)
                 log.debug(
-                    "[am_pipe/image] OIIO has no TypeRational — wrote "
+                    "[am-vfx-tools/image] OIIO has no TypeRational — wrote "
                     "framesPerSecond as STRING %r (%s)", fps_str, filepath,
                 )
         except Exception as e:
             log.warning(
-                "[am_pipe/image] failed to write framesPerSecond on %s: %s",
+                "[am-vfx-tools/image] failed to write framesPerSecond on %s: %s",
                 filepath, e,
             )
         # Nuke pipeline convention — string-valued.
@@ -440,7 +440,7 @@ def _embed_frame_rate(spec: Any, filepath: str, fps: float) -> None:
             spec.attribute("input/frame_rate", fps_str)
         except Exception as e:
             log.warning(
-                "[am_pipe/image] failed to write input/frame_rate on %s: %s",
+                "[am-vfx-tools/image] failed to write input/frame_rate on %s: %s",
                 filepath, e,
             )
         return
@@ -451,14 +451,14 @@ def _embed_frame_rate(spec: Any, filepath: str, fps: float) -> None:
                 spec.attribute(key, fps_str)
             except Exception as e:
                 log.warning(
-                    "[am_pipe/image] failed to write %s on %s: %s",
+                    "[am-vfx-tools/image] failed to write %s on %s: %s",
                     key, filepath, e,
                 )
         return
 
     # Other formats — silently skip.
     log.debug(
-        "[am_pipe/image] frame_rate not embedded — extension %r is not "
+        "[am-vfx-tools/image] frame_rate not embedded — extension %r is not "
         "in the supported set (EXR/PNG/TIF/JPG)",
         ext,
     )
@@ -547,7 +547,7 @@ def write_image(
             try:
                 spec.attribute(k, v)
             except Exception:
-                log.warning("[am_pipe/image] skipped metadata attr %r=%r", k, v)
+                log.warning("[am-vfx-tools/image] skipped metadata attr %r=%r", k, v)
 
     if workflow_metadata:
         _embed_workflow_metadata(spec, filepath, workflow_metadata)
