@@ -28,15 +28,12 @@ Image / AM Write Video nodes:
   literal path doesn't exist yet (e.g. fresh write target before any
   frames have rendered).
 
-The three media-IO routes above (`detect-range`, `drop`, `open-in-explorer`)
-trust the path the JS posts — paths are passed through verbatim.
-
-The filechooser routes (`roots`, `list`, `mkdir`, `reveal`,
-`native-dialog/{available,open,save}`) registered at the bottom of this
-module DO sandbox: they only allow paths under the configured roots
-(default: user home + `~/Documents`; override via the
-`AM_VFX_TOOLS_FILECHOOSER_ROOTS` env var). These back the 📂 Browse
-button on the AM Read / Write nodes and the workfile-io menu.
+All routes (the three above + the filechooser routes registered at the
+bottom of this module) accept arbitrary absolute paths — there is no
+path-allowlist sandbox. The configured "roots" (default: user home +
+`~/Documents`; override via `AM_VFX_TOOLS_FILECHOOSER_ROOTS`) are used
+purely as the default starting directory for file dialogs and as the
+roots dropdown in the in-browser browser. Same model as stock ComfyUI.
 """
 from __future__ import annotations
 
@@ -686,9 +683,10 @@ log.info(
 
 # ---------------------------------------------------------------------------
 # Filechooser routes — backs the 📂 Browse button on the AM Read / Write
-# nodes and the workfile-io menu. Sandboxed against the configured roots
-# (see _filechooser/_config.py — defaults to user home + ~/Documents,
-# override via AM_VFX_TOOLS_FILECHOOSER_ROOTS env).
+# nodes and the workfile-io menu. Default starting dir comes from
+# _filechooser/_config.py (user home + ~/Documents by default, override
+# via AM_VFX_TOOLS_FILECHOOSER_ROOTS env). NOT sandboxed — paths are
+# accepted verbatim, matching stock ComfyUI behaviour.
 # ---------------------------------------------------------------------------
 
 # AM Read accepts any image OIIO understands. We don't constrain

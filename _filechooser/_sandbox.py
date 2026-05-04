@@ -1,13 +1,22 @@
-"""Sandbox check for user-supplied paths.
+"""Path validation for the public pack — format-checks only, no path-roots gate.
 
-The single function :func:`validate` is the only place that decides whether
-a path is permitted. It returns a canonical (as-given-prefixed) ``Path`` on
-success or raises one of the module-local exception types so the caller can
-translate to its own transport error (HTTP, GUI, etc.).
+The internal pipeline pack (`am_pipe.filechooser._sandbox`) enforces a
+roots-allowlist: any path outside the configured roots is rejected. That
+makes sense in a studio context where there's a real "outside the
+pipeline" boundary. For the public ``comfyui-am-vfx-tools`` pack, paths
+are unrestricted — same as ComfyUI core, which lets users read/write
+anywhere.
 
-Originally lived in ``work-file-io/sandbox.py`` and raised aiohttp HTTP
-exceptions directly; extracted in Phase 2 so non-HTTP callers (the AM Read
-/ AM Write Comfy nodes that use the chooser inline) can reuse it.
+What's still checked:
+* Empty / NUL-byte paths (defensive)
+* Empty final-component paths (e.g. trailing slash with no name)
+* Optional ``must_have_suffix`` (used by the workfile-IO routes to enforce
+  ``.json`` so a typo doesn't load random binary files)
+
+The exception classes are kept for caller compatibility (``sandbox.py``
+shim still translates them to aiohttp HTTPException). ``SandboxOutsideRoots``
+is intentionally never raised by this implementation but kept in the
+public surface so external callers don't break if they catch it.
 """
 from __future__ import annotations
 
@@ -15,13 +24,12 @@ import logging
 from pathlib import Path
 from typing import Optional
 
-from . import _config
 
 log = logging.getLogger("am_vfx_tools.filechooser")
 
 
 class SandboxError(ValueError):
-    """Base for all sandbox-rejection errors."""
+    """Base for all path-rejection errors."""
 
 
 class SandboxBadInput(SandboxError):
@@ -29,7 +37,7 @@ class SandboxBadInput(SandboxError):
 
 
 class SandboxOutsideRoots(SandboxError):
-    """Path resolved outside every configured root."""
+    """Kept for caller compatibility; never raised by the public pack."""
 
 
 class SandboxBadSuffix(SandboxError):
@@ -37,15 +45,11 @@ class SandboxBadSuffix(SandboxError):
 
 
 def validate(path: str, *, must_have_suffix: Optional[str] = None) -> Path:
-    """Resolve *path* and verify it sits under one of the configured roots.
+    """Resolve *path* and run format-checks. No roots-allowlist enforcement.
 
-    Returns a canonical :class:`Path` (as-given root prefix preserved) on
-    success. Raises :class:`SandboxBadInput`, :class:`SandboxOutsideRoots`,
-    or :class:`SandboxBadSuffix` on failure.
-
-    *must_have_suffix* — if given, the resolved path's extension is
-    compared case-insensitively against this string (with or without a
-    leading ``.``).
+    Returns a resolved absolute :class:`Path` on success.
+    Raises :class:`SandboxBadInput` for malformed paths or
+    :class:`SandboxBadSuffix` if *must_have_suffix* is given and doesn't match.
     """
     if not isinstance(path, str) or not path:
         raise SandboxBadInput("path is empty")
@@ -68,33 +72,7 @@ def validate(path: str, *, must_have_suffix: Optional[str] = None) -> Path:
                 f"path must have .{wanted} extension, got .{got or '(none)'}"
             )
 
-    for root in _config.ROOTS:
-        try:
-            if resolved == root.resolved or _is_relative_to(resolved, root.resolved):
-                if resolved == root.resolved:
-                    return Path(root.as_given)
-                rel = resolved.relative_to(root.resolved)
-                return Path(root.as_given) / rel
-        except ValueError:
-            continue
-
-    log.warning(
-        "[am-vfx-tools/filechooser] sandbox reject: %s (roots=%s)",
-        resolved, [r.as_given for r in _config.ROOTS],
-    )
-    raise SandboxOutsideRoots(
-        f"path {path} is outside configured filechooser roots "
-        f"({', '.join(r.as_given for r in _config.ROOTS) or 'none'})"
-    )
-
-
-def _is_relative_to(p: Path, root: Path) -> bool:
-    """``Path.is_relative_to`` polyfill for Python < 3.9 (defensive)."""
-    try:
-        p.relative_to(root)
-    except ValueError:
-        return False
-    return True
+    return resolved
 
 
 __all__ = [

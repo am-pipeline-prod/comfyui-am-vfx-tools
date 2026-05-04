@@ -144,10 +144,12 @@ Each AM Read / Write node has three buttons stacked above `file_path`:
 
 * **📂 Browse** — opens the OS-native file dialog (zenity / kdialog /
   yad on Linux, PowerShell on Windows). Picked path is written into
-  `file_path`. Sandbox-protected: the dialog only allows paths under
-  the configured roots (default: user home + `~/Documents`; override
-  via env `AM_VFX_TOOLS_FILECHOOSER_ROOTS`). Falls back gracefully
-  when no native tool is available.
+  `file_path`. Opens at the configured default directory (user home +
+  `~/Documents`; override via env `AM_VFX_TOOLS_FILECHOOSER_ROOTS` —
+  see the "Configuring default dialog directories" section below).
+  Falls back to an in-browser file browser when no native tool is
+  available. **Path access is not restricted** — pick anywhere the
+  OS lets you read/write.
 * **📁 Open in Explorer** — reveals the resolved `file_path` in your
   OS file manager (Explorer / Finder / Nautilus / Dolphin). Walks up
   to the deepest existing parent if the resolved path doesn't exist
@@ -169,30 +171,34 @@ with:
 * **Copy Current Path**
 
 Save / Open prefer the **native OS file dialog** when available, fall
-back to a built-in browser dialog otherwise. All operations are
-sandboxed against the same configured roots as the Browse button.
+back to a built-in browser dialog otherwise. Default starting directory
+matches the Browse button (user home + `~/Documents`, or whatever
+`AM_VFX_TOOLS_FILECHOOSER_ROOTS` points at). No path restrictions.
 
 A toggle under **Settings → AM VFX Tools → Workfile IO → Prefer
 native OS file dialogs** lets you force the in-browser dialog even when
 native is available.
 
-## Configuring sandbox roots
+## Configuring default dialog directories
 
-The Browse button + workfile-io operations are sandboxed against a list
-of allowed root directories. Default behaviour:
+The Browse button + workfile-io dialogs need a sensible starting
+directory. By default they open at:
 
-* **Linux:** `~` + `~/Documents` (when it exists)
-* **Windows:** `~` + `~/Documents` (when it exists)
+* **Linux / Windows / macOS:** `~` + `~/Documents` (when it exists)
 
-Override by setting `AM_VFX_TOOLS_FILECHOOSER_ROOTS` in your ComfyUI
-launch environment:
+You can override these defaults by setting
+`AM_VFX_TOOLS_FILECHOOSER_ROOTS` in your ComfyUI launch environment —
+useful if your work lives somewhere else and you don't want to navigate
+there every time:
 
 * **Linux / macOS:** `AM_VFX_TOOLS_FILECHOOSER_ROOTS=/work/projects:/scratch:/mnt/nas`
 * **Windows:** `AM_VFX_TOOLS_FILECHOOSER_ROOTS=D:\work;E:\projects;Z:\nas`
 
-Roots that don't exist on disk are silently dropped at startup with a
-warning in the ComfyUI log. If no valid roots remain, all I/O is
-rejected — set the env var or ensure the defaults exist.
+> **No path restrictions.** This pack does NOT sandbox path access —
+> you can type or pick any absolute path the OS lets you read/write,
+> regardless of the configured "roots." The roots are purely the
+> *default starting directory* and the entries in the in-browser
+> browser's roots dropdown. Same model as stock ComfyUI.
 
 ## Development
 

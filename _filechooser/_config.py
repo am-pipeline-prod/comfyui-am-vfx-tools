@@ -1,22 +1,27 @@
-"""Sandbox-roots + native-dialog tool detection.
+"""Default-directory roots + native-dialog tool detection.
+
+ROOTS in the public pack are a UX hint, **not** a sandbox: they're used
+as the starting directory the file dialog opens at, and as the entries
+in the in-browser browser's "roots" dropdown. Path access is NOT
+restricted to roots — the AM Read / Write / workfile-io routes accept
+any absolute path the user types or picks. This matches stock ComfyUI's
+behaviour (no path-allowlist).
 
 Resolves once at import time. Inputs:
 
 * Env var ``AM_VFX_TOOLS_FILECHOOSER_ROOTS`` — colon-separated on Linux,
-  semicolon-separated on Windows. Override the defaults by exporting it
-  in your ComfyUI launch environment.
+  semicolon-separated on Windows. Override the default starting points
+  by exporting it in your ComfyUI launch environment. Useful if your
+  work lives somewhere other than ``~/Documents``.
 
 * If unset, defaults to the user's home directory plus ``~/Documents``
-  (when it exists). Open these so a fresh install with no env-var has a
-  workable starting point — most artists keep work under their home tree.
+  (when it exists). Open these so a fresh install lands somewhere
+  reasonable — but the user can always navigate / type elsewhere.
 
-Each root is tracked as a :class:`Root` ``(as_given, resolved)`` pair: the
-``as_given`` form is what the user/env supplied, used in user-facing
-output; ``resolved`` is the symlink-resolved form, used for the sandbox
-check itself.
+Each root is tracked as a :class:`Root` ``(as_given, resolved)`` pair.
 
 Vendored from am-pipe-comfy / am_pipe.filechooser. Adapted defaults +
-env-var name for the public ``comfyui-am-vfx-tools`` distribution.
+env-var name + sandbox-removed for the public distribution.
 """
 from __future__ import annotations
 
@@ -96,10 +101,10 @@ def _resolve_roots() -> List[Root]:
         resolved.append(Root(as_given=as_given, resolved=r))
 
     if not resolved:
-        log.error(
-            "[am-vfx-tools/filechooser] no valid sandbox roots — chooser will reject all I/O. "
-            "Set %s or ensure default roots exist.",
-            ENV_VAR,
+        log.warning(
+            "[am-vfx-tools/filechooser] no resolvable default roots — file dialogs "
+            "will open at the OS default location. Path I/O still works (no "
+            "sandbox); this only affects where dialogs first land.",
         )
     return resolved
 
