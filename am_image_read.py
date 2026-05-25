@@ -273,9 +273,64 @@ class AMImageRead:
     OUTPUT_NODE = True
 
     @classmethod
-    def IS_CHANGED(cls, **_):
-        # Per-frame load is cheap; force re-execution on every queue.
-        return float("nan")
+    def IS_CHANGED(
+        cls,
+        file_path: str = "",
+        frame_mode: str = FRAME_MODE_SINGLE,
+        first_frame: int = -1,
+        last_frame: int = 1,
+        **kwargs,
+    ):
+        # Re-execute only when the inputs OR the underlying file(s) on disk
+        # actually change, instead of forcing a re-run on every queue.
+        #
+        # Returning a stable, content-derived hash (the same idiom ComfyUI's
+        # stock LoadImage uses) lets ComfyUI cache the output. That keeps the
+        # output IMAGE tensor's *identity* stable across executions when
+        # nothing changed, which downstream nodes rely on — notably Impact
+        # Pack's PreviewBridge, whose mask + RGB-paint persistence breaks if
+        # the upstream image object changes every run (which float("nan")
+        # guaranteed). External re-renders still invalidate via mtime/size.
+        import hashlib
+        h = hashlib.sha256()
+        # 1. All widget inputs that affect the loaded result.
+        h.update(repr((file_path, frame_mode, first_frame, last_frame)).encode())
+        for k in sorted(kwargs):
+            h.update(f"{k}={kwargs[k]!r}".encode())
+        # 2. mtime + size of every concrete frame file the load plan resolves
+        #    to, so re-rendering the same path on disk invalidates the cache.
+        try:
+            pattern, frames, _, _, padding = cls()._build_load_plan(
+                file_path=file_path,
+                frame_mode=frame_mode,
+                first_frame=first_frame,
+                last_frame=last_frame,
+            )
+            if padding == 0:
+                paths = [pattern]
+            else:
+                paths = [
+                    sequence.expand_frame_pattern(pattern, f, padding)
+                    for f in frames
+                ]
+            for p in paths:
+                try:
+                    st = os.stat(p)
+                    h.update(f"|{p}:{st.st_mtime_ns}:{st.st_size}".encode())
+                except OSError:
+                    h.update(f"|{p}:missing".encode())
+        except Exception:
+            # Path couldn't be resolved (unresolved token, etc.). Fall back to
+            # a best-effort stat of the literal path. Still deterministic, so we
+            # never silently regress to always re-executing.
+            h.update(b"|unresolved")
+            try:
+                exp = os.path.expandvars(os.path.expanduser(file_path))
+                st = os.stat(exp)
+                h.update(f"|{exp}:{st.st_mtime_ns}:{st.st_size}".encode())
+            except OSError:
+                pass
+        return h.hexdigest()
 
     # ------------------------------------------------------------------ #
     #  Main entry point
