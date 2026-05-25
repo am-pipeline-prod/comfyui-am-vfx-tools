@@ -446,6 +446,7 @@ async def _drop(request: web.Request):
             "input_dir":     "/.../comfy-ui/input",
             "filename":      "<filename>",
             "resolved_via":  "upload" | "source_path" | "search",
+            "frame_padding": int,
             "workflow":      {...} | null,
             "prompt":        {...} | null,
             "found":         bool,
@@ -546,12 +547,13 @@ async def _drop(request: web.Request):
 
     if not resolved_path:
         wf = meta.get("workflow") or {}
-        # `extra.am_pipe.path` is a breadcrumb stamped into saved
-        # workflows by the (separate) AM Pipe stack — surfaces the path
-        # of the workfile that produced this image. Honor it when
-        # present so dropped files snap back to their on-disk source.
+        # `extra.am_vfx_tools.path` is a breadcrumb stamped into saved
+        # workflows by this pack's workfile-io (see web/lib/dialogs.js
+        # `stampGraphMetadata`) — surfaces the path of the workfile that
+        # produced this image. Honor it when present so dropped files
+        # snap back to their on-disk source.
         wf_extra = (wf.get("extra") if isinstance(wf, dict) else {}) or {}
-        wf_meta = wf_extra.get("am_pipe") or {}
+        wf_meta = wf_extra.get("am_vfx_tools") or {}
         workfile_path = wf_meta.get("path") or wf_meta.get("workfile")
         if workfile_path:
             candidate = _find_source_under_workfile(workfile_path, filename)
@@ -576,9 +578,18 @@ async def _drop(request: web.Request):
         out_filename = saved_filename
         out_input_dir = input_dir
 
+    # Frame-sequence sniff — lets the JS-side AM Read Image override the
+    # default `frame_mode=all` to `single` when the dropped file isn't
+    # part of a recognisable sequence. ``parse_frame_pattern`` returns
+    # padding=0 when no ``####`` / ``%0Nd`` / dot-separated trailing
+    # digit token is present, so non-sequence drops like
+    # ``output_b0001.exr`` / ``photo42.png`` aren't misread as a
+    # sequence of one.
+    _, _, frame_padding = sequence.parse_frame_pattern(absolute_path)
+
     log.info(
-        "[am_vfx_tools] drop resolved via=%s path=%s",
-        resolved_via, absolute_path,
+        "[am_vfx_tools] drop resolved via=%s path=%s padding=%d",
+        resolved_via, absolute_path, frame_padding,
     )
 
     return web.json_response(_strip_nonjson_floats({
@@ -586,6 +597,7 @@ async def _drop(request: web.Request):
         "input_dir":     out_input_dir,
         "filename":      out_filename,
         "resolved_via":  resolved_via,
+        "frame_padding": frame_padding,
         "workflow":      meta.get("workflow"),
         "prompt":        meta.get("prompt"),
         "found":         bool(meta.get("found")),

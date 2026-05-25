@@ -1,4 +1,4 @@
-"""am-pipe-media-io._core — private color/IO core for the Read/Write nodes.
+"""am-vfx-tools-media-io._core — private color/IO core for the Read/Write nodes.
 
 Public submodules consumed by the node files at the package root:
 

@@ -363,12 +363,12 @@ class AMSeed:
         # happening server-side AFTER resolution (preserving
         # render-farm reproducibility — a headless worker without a
         # connected client just skips the push). The frontend extension
-        # subscribes to `am_pipe.am_seed.resolved` and writes the value
+        # subscribes to `am_vfx_tools.am_seed.resolved` and writes the value
         # into the matching node's `value` widget.
         if _PromptServer is not None:
             try:
                 _PromptServer.instance.send_sync(
-                    "am_pipe.am_seed.resolved",
+                    "am_vfx_tools.am_seed.resolved",
                     {
                         "node_id": str(unique_id or ""),
                         "seed":    int(seed),

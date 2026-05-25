@@ -5,14 +5,14 @@ IMAGE batch in *input_colorspace* and converts it to *working_colorspace*
 via a single OCIO ColorProcessor — same code path the AM Read / AM Write
 nodes use.
 
-This is the colorspace-mode utility; the future AM OCIO Display Transform
-will mirror Nuke's display+view two-stage transform_type=display mode (out
-of scope for now — see the rework plan §10).
+Also accepts an optional ``video`` input — when wired, returns a lazy
+:class:`._core.video_lazy.OCIOTransformVideo` wrapper that applies the
+OCIO transform per-frame on consumption. See docs/media-io-sync-rule.md
+invariant 28.
 
-Code-import baseline: ``custom-nodes/nuke-nodes/colorspace_nodes.py::
-NukeOCIOColorSpace`` — but the implementation is rewritten on top of our
-``_core.color.ColorProcessor`` (in-place buffer transform, no per-frame
-config rebuild) and our family-grouped dropdown.
+The colorspace-mode utility; the future AM OCIO Display Transform will
+mirror Nuke's display+view ``transform_type=display`` mode (out of scope
+for now).
 """
 from __future__ import annotations
 
@@ -23,6 +23,17 @@ import numpy as np
 import torch
 
 from ._core import color
+from ._core import video_lazy
+
+# Native ComfyUI VIDEO type — see docs/media-io-sync-rule.md invariant 28.
+try:
+    from comfy_api.v0_0_2 import InputImpl as _ComfyInputImpl  # type: ignore[import-not-found]
+    from comfy_api.v0_0_2 import Types as _ComfyTypes  # type: ignore[import-not-found]
+    _VIDEO_TYPE_AVAILABLE = True
+except ImportError:
+    _ComfyInputImpl = None  # type: ignore[assignment]
+    _ComfyTypes = None  # type: ignore[assignment]
+    _VIDEO_TYPE_AVAILABLE = False
 
 log = logging.getLogger("am_vfx_tools.media-io.ocio-colorspace")
 
@@ -57,13 +68,26 @@ class AMOCIOColorspace:
                 "image": ("IMAGE", {
                     "tooltip": "Image batch to transform.",
                 }),
+                "video": ("VIDEO", {
+                    "tooltip": (
+                        "Optional VIDEO input. When wired, returns a lazy "
+                        "`OCIOTransformVideo` wrapper applying the OCIO "
+                        "transform per-frame on consumption — no IMAGE "
+                        "materialisation here. Alpha (when present) passes "
+                        "through untouched. `image` is ignored when "
+                        "`video` is wired. See invariant 28."
+                    ),
+                }),
             },
         }
 
-    RETURN_TYPES = ("IMAGE",)
-    RETURN_NAMES = ("image",)
+    RETURN_TYPES = ("IMAGE", "VIDEO")
+    RETURN_NAMES = ("image", "video")
     OUTPUT_TOOLTIPS = (
         "Transformed image batch (same shape and channels as the input).",
+        "Lazy VIDEO output — emits an `OCIOTransformVideo` wrapper when "
+        "`video` is wired, else a zero-copy `VideoFromComponents` around "
+        "the IMAGE batch. None when no input is wired.",
     )
     FUNCTION = "execute"
     CATEGORY = "AM VFX Tools/Color"
@@ -73,13 +97,25 @@ class AMOCIOColorspace:
         input_colorspace: str,
         working_colorspace: str,
         image: Optional[torch.Tensor] = None,
+        video=None,
     ):
-        if image is None:
-            log.warning("[am-vfx-tools/ocio-cs] `image` input is not wired — passing through")
-            return (torch.zeros((1, 64, 64, 3), dtype=torch.float32),)
-
         src = color.resolve_choice_to_cs(input_colorspace)
         dst = color.resolve_choice_to_cs(working_colorspace)
+
+        # VIDEO branch — return a lazy OCIOTransformVideo wrapper.
+        if video is not None:
+            if image is not None:
+                log.warning(
+                    "[am_vfx_tools/ocio-cs] both VIDEO and IMAGE inputs wired "
+                    "— VIDEO wins; IMAGE ignored"
+                )
+            wrapped = video_lazy.OCIOTransformVideo(video, src=src, dst=dst)
+            placeholder = torch.zeros((1, 64, 64, 3), dtype=torch.float32)
+            return (placeholder, wrapped)
+
+        if image is None:
+            log.warning("[am_vfx_tools/ocio-cs] no input wired — passing through")
+            return (torch.zeros((1, 64, 64, 3), dtype=torch.float32), None)
 
         out_image = image
         if (
@@ -99,15 +135,31 @@ class AMOCIOColorspace:
                             proc.apply_inplace(out_np[i])
                         except Exception as e:
                             log.warning(
-                                "[am-vfx-tools/ocio-cs] OCIO apply failed on frame %d "
+                                "[am_vfx_tools/ocio-cs] OCIO apply failed on frame %d "
                                 "(%s); leaving frame untransformed",
                                 i, e,
                             )
                     out_image = torch.from_numpy(out_np).to(image.device)
             except Exception as e:
                 log.warning(
-                    "[am-vfx-tools/ocio-cs] cannot build %s -> %s (%s); pixels unchanged",
+                    "[am_vfx_tools/ocio-cs] cannot build %s -> %s (%s); pixels unchanged",
                     src, dst, e,
                 )
 
-        return (out_image,)
+        return (out_image, _build_video_socket(out_image))
+
+
+def _build_video_socket(images):
+    """Zero-copy VideoFromComponents wrapper for the VIDEO output socket."""
+    if not _VIDEO_TYPE_AVAILABLE or images is None:
+        return None
+    try:
+        from fractions import Fraction as _Fraction
+        return _ComfyInputImpl.VideoFromComponents(
+            _ComfyTypes.VideoComponents(
+                images=images, frame_rate=_Fraction(25, 1),
+            ),
+        )
+    except Exception as e:  # noqa: BLE001
+        log.warning("[am_vfx_tools/ocio-cs] VIDEO socket build failed (%s); None", e)
+        return None

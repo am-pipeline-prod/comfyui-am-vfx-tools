@@ -1,4 +1,4 @@
-"""am-pipe-media-io._core.video_backend — PyAV decode/encode wrapper.
+"""am-vfx-tools-media-io._core.video_backend — PyAV decode/encode wrapper.
 
 Pure I/O — no color management. Pair with :mod:`._core.color` to apply
 ``input_cs -> working_cs`` on read and ``working_cs -> output_cs`` on
@@ -126,7 +126,7 @@ if _PYAV_AVAILABLE:
     _missing = [k for k, v in CODECS.items() if not encoder_available(v["encoder"])]
     for k in _missing:
         log.warning(
-            "[am-vfx-tools/video] encoder %r missing in this ffmpeg build; "
+            "[am_vfx_tools/video] encoder %r missing in this ffmpeg build; "
             "dropping codec %r from the registry",
             CODECS[k]["encoder"], k,
         )
@@ -370,7 +370,7 @@ def read_video_frames(
             try:
                 audio = _decode_audio(container, audio_track)
             except Exception as e:
-                log.warning("[am-vfx-tools/video] audio decode failed (%s); audio dropped", e)
+                log.warning("[am_vfx_tools/video] audio decode failed (%s); audio dropped", e)
                 audio = None
     finally:
         container.close()
@@ -384,7 +384,7 @@ def _decode_audio(container, track_index: int) -> Optional[AudioBuffer]:
 
     if track_index >= len(container.streams.audio):
         log.warning(
-            "[am-vfx-tools/video] requested audio_track=%d but only %d audio stream(s)",
+            "[am_vfx_tools/video] requested audio_track=%d but only %d audio stream(s)",
             track_index, len(container.streams.audio),
         )
         return None
@@ -461,7 +461,7 @@ def _apply_codec_options(
             br = bitrate_or_crf.strip()
             if br.lower().startswith("crf"):
                 log.warning(
-                    "[am-vfx-tools/video] codec=prores ignores %r — ProRes is fixed-bitrate "
+                    "[am_vfx_tools/video] codec=prores ignores %r — ProRes is fixed-bitrate "
                     "per profile. Use a bitrate like '120M' or leave empty.", bitrate_or_crf,
                 )
             else:
@@ -472,7 +472,7 @@ def _apply_codec_options(
             br = bitrate_or_crf.strip()
             if br.lower().startswith("crf"):
                 log.warning(
-                    "[am-vfx-tools/video] codec=dnxhr ignores %r — DNxHR is fixed-bitrate "
+                    "[am_vfx_tools/video] codec=dnxhr ignores %r — DNxHR is fixed-bitrate "
                     "per profile/resolution. Use a bitrate like '120M' or leave empty.",
                     bitrate_or_crf,
                 )
@@ -598,7 +598,7 @@ def write_video(
                 container.metadata[str(k)] = str(v)
         except Exception:
             log.warning(
-                "[am-vfx-tools/video] failed to set workflow metadata on %s",
+                "[am_vfx_tools/video] failed to set workflow metadata on %s",
                 filepath,
             )
 
@@ -667,7 +667,7 @@ def write_video(
                 _mux_audio(container, audio_buffer, container_ext=os.path.splitext(filepath)[1])
             except Exception as e:
                 log.warning(
-                    "[am-vfx-tools/video] audio mux failed (%s); video written without audio", e,
+                    "[am_vfx_tools/video] audio mux failed (%s); video written without audio", e,
                 )
     finally:
         container.close()
@@ -684,7 +684,7 @@ def _mux_audio(container, audio: AudioBuffer, *, container_ext: str) -> None:
     ext = container_ext.lstrip(".").lower()
     audio_codec = "libopus" if ext == "webm" else "aac"
     if not encoder_available(audio_codec):
-        log.warning("[am-vfx-tools/video] audio encoder %s missing; skipping audio", audio_codec)
+        log.warning("[am_vfx_tools/video] audio encoder %s missing; skipping audio", audio_codec)
         return
 
     waveform = np.asarray(audio.waveform)
@@ -695,7 +695,7 @@ def _mux_audio(container, audio: AudioBuffer, *, container_ext: str) -> None:
         waveform = waveform[None, :]
     if waveform.ndim != 2:
         log.warning(
-            "[am-vfx-tools/video] audio waveform shape %s unsupported; skipping",
+            "[am_vfx_tools/video] audio waveform shape %s unsupported; skipping",
             waveform.shape,
         )
         return
@@ -704,7 +704,7 @@ def _mux_audio(container, audio: AudioBuffer, *, container_ext: str) -> None:
     if n_chan not in (1, 2):
         # Fold to stereo if more than 2; let single-channel pass.
         log.warning(
-            "[am-vfx-tools/video] audio with %d channels — mixing down to stereo", n_chan,
+            "[am_vfx_tools/video] audio with %d channels — mixing down to stereo", n_chan,
         )
         waveform = waveform[:2]
         n_chan = 2

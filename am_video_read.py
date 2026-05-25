@@ -38,6 +38,19 @@ import torch
 
 from ._core import color, preview, reformat, video_backend
 
+# Native ComfyUI VIDEO type — see media-io VIDEO-socket policy. Unlike AM
+# Read Image's VIDEO socket (a `VideoFromComponents` wrapper), this node's
+# socket is a `VideoFromFile` referencing the source on disk. Defensive
+# import so older ComfyUI without `comfy_api` still loads.
+try:
+    from comfy_api.v0_0_2 import InputImpl as _ComfyInputImpl  # type: ignore[import-not-found]
+    from comfy_api.v0_0_2 import Types as _ComfyTypes  # type: ignore[import-not-found]
+    _VIDEO_TYPE_AVAILABLE = True
+except ImportError:
+    _ComfyInputImpl = None  # type: ignore[assignment]
+    _ComfyTypes = None  # type: ignore[assignment]
+    _VIDEO_TYPE_AVAILABLE = False
+
 log = logging.getLogger("am_vfx_tools.read_video")
 
 
@@ -190,10 +203,12 @@ class AMVideoRead:
     # matches AM Read Image.
     RETURN_TYPES = (
         "IMAGE", "MASK", "AUDIO", "STRING", "STRING", "INT", "INT", "FLOAT", "INT",
+        "VIDEO",
     )
     RETURN_NAMES = (
         "image", "mask", "audio", "resolved_path", "info",
         "width", "height", "frame_rate", "frame_count",
+        "video",
     )
     OUTPUT_TOOLTIPS = (
         "Decoded frames as IMAGE (N×H×W×3 float in [0,1]). RGB only — alpha "
@@ -206,6 +221,11 @@ class AMVideoRead:
         "Frame height in pixels.",
         "Container's native frame rate (read from the PyAV header).",
         "Number of frames decoded into the IMAGE batch.",
+        "`VideoFromFile` referencing the source on disk. Wiring ONLY this "
+        "(not `image`) skips the PyAV decode — peak RAM stays at "
+        "file-handle level. ⚠️ Raw passthrough: source colorspace, source "
+        "resolution, source codec. OCIO/Reformat apply to `image` only. "
+        "Both sockets can be wired in the same graph for parallel branches.",
     )
     FUNCTION = "execute"
     CATEGORY = "AM VFX Tools"
@@ -370,12 +390,18 @@ class AMVideoRead:
         # Audio dict for the AUDIO socket.
         audio_dict = audio_buf.as_comfy_audio() if audio_buf is not None else self._silent_audio_stub()
 
+        # VIDEO socket — VideoFromFile pointing at the SOURCE (pre-OCIO,
+        # pre-reformat). See OUTPUT_TOOLTIPS for the raw-passthrough rule.
+        video_socket = self._make_video_socket(path)
+
         return {
             "ui": self._ui_payload(tensor, path, show_preview, working_colorspace),
             "result": (
-                # image, mask, audio, resolved_path, info, width, height, frame_rate, frame_count
+                # image, mask, audio, resolved_path, info, width, height,
+                # frame_rate, frame_count, video
                 tensor, mask_tensor, audio_dict, path, info_str,
                 int(width), int(height), float(fps), int(n_out),
+                video_socket,
             ),
         }
 
@@ -473,11 +499,38 @@ class AMVideoRead:
         return {
             "ui": {"text": [label]},
             "result": (
-                # image, mask, audio, resolved_path, info, width, height, frame_rate, frame_count
+                # image, mask, audio, resolved_path, info, width, height,
+                # frame_rate, frame_count, video
+                # Empty VIDEO = None (can't VideoFromFile an unresolved path;
+                # downstream consumers should guard against None VIDEO).
                 empty, empty_mask, self._silent_audio_stub(), label, "(empty)",
                 64, 64, 0.0, 1,
+                None,
             ),
         }
+
+    # ------------------------------------------------------------------ #
+    #  VIDEO socket helper.
+    # ------------------------------------------------------------------ #
+    @staticmethod
+    def _make_video_socket(path: str):
+        """Build a `VideoFromFile` referencing *path*.
+
+        Returns None when `comfy_api.v0_0_2` is unavailable or *path*
+        doesn't exist. Cheap: holds only the path; decoding is lazy.
+        """
+        if not _VIDEO_TYPE_AVAILABLE:
+            return None
+        if not path or not os.path.isfile(path):
+            return None
+        try:
+            return _ComfyInputImpl.VideoFromFile(path)
+        except Exception as e:  # noqa: BLE001
+            log.warning(
+                "[am_vfx_tools/read-video] VIDEO socket for %s failed (%s); None",
+                path, e,
+            )
+            return None
 
 
 def _extrapolate_block(stack: np.ndarray, count: int, *, side: str, policy: str) -> np.ndarray:

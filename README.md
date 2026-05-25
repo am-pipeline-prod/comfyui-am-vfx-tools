@@ -5,11 +5,14 @@
 [![ComfyUI](https://img.shields.io/badge/ComfyUI-custom%20node-7d3aed)](https://github.com/comfyanonymous/ComfyUI)
 
 VFX I/O & color toolkit for ComfyUI: image + video read/write
-(OpenImageIO + PyAV), OCIO 2.x color management, Nuke-style Grade,
-OpenCV reformat, render-farm-safe Seed, and frame-range slicing.
-**11 nodes** under the **AM VFX Tools** category, plus a workfile-io
-menu (Save / Open / Recent / Incremental Save) for managing workflow
-JSON files outside ComfyUI's default folder.
+(OpenImageIO + PyAV), OCIO 2.x color management, Nuke-style Grade +
+Color Correct, OpenCV reformat, frame-order reverse, render-farm-safe
+Seed, and frame-range slicing. **13 nodes** under the **AM VFX Tools**
+category, plus a workfile-io menu (Save / Open / Recent / Incremental
+Save) for managing workflow JSON files outside ComfyUI's default folder.
+
+Every pixel node also carries a native ComfyUI **`VIDEO` socket** for
+low-RAM streaming — see [Video sockets](#video-sockets) below.
 
 This pack is the public, generic subset of an internal studio pipeline.
 The internal pack (`am-pipe-comfy`) adds an "Auto" mode that resolves
@@ -50,8 +53,43 @@ reformat, workfile-io) is identical.
 | **AM Reformat** | OpenCV-backed resize. Five filters (impulse / linear / cubic / Lanczos4 / area). Scale by factor, target W/H, or preset. Fit / fill / pad / crop. 4-channel alpha-preserving. Optional dtype cast on output. |
 | **AM Grade** | Nuke-style Grade math (`(x - blackpoint) * (whitepoint - blackpoint)^-1 * (gain - lift) + lift`, then `gamma` and `multiply`/`offset`). Single luminance values for blackpoint / whitepoint / gain / lift. |
 | **AM Grade RGB** | Same math as AM Grade but per-channel (separate R / G / B controls for each parameter). |
+| **AM Color Correct** | Nuke ColorCorrect-style grade: saturation, contrast, gamma, gain, offset, and hue-rotation controls. Pure-torch per-pixel math, alpha-preserving. |
+| **AM Reverse Sequence** | Reverse the frame order of an IMAGE/MASK batch (or a wired VIDEO stream). |
 | **AM Frame Range** | Slice an IMAGE batch by `start_frame` / `end_frame` / `step`. Output a sub-batch. |
 | **AM Seed** | Render-farm-safe seed node that fixes [comfyanonymous/ComfyUI#11905](https://github.com/comfyanonymous/ComfyUI/issues/11905) — the seed value is captured at queue-time and surfaces on the socket, so a workflow re-queued days later (or run on a different host) reproduces exactly. |
+
+## Video sockets
+
+Every pixel node carries a native ComfyUI **`VIDEO`** socket (requires
+ComfyUI ≥ 0.3.48 for `comfy_api.v0_0_2`; the nodes degrade gracefully on
+older builds). These let you keep long sequences out of RAM:
+
+* **AM Read Video → `video`** — a `VideoFromFile` referencing the source
+  on disk. Wiring *only* this socket (not `image`) skips the PyAV decode
+  entirely — peak RAM stays at file-handle level instead of an N-frame
+  tensor. ⚠️ Raw passthrough: source colorspace/resolution/codec,
+  unaffected by the node's OCIO/Reformat (those apply to `image`).
+* **AM Read Image → `video`** — a `VideoFromComponents` wrapper around
+  the already-decoded batch (convenience; no RAM benefit).
+* **AM Write Image ← `video`** — the streaming branch. Wire a
+  `VideoFromFile` (e.g. the output of an upstream API/upscaler node) and
+  the writer iterates **one frame at a time** through the per-frame OCIO
+  + Reformat + dtype pipeline, writing each EXR — peak RAM stays at one
+  frame regardless of sequence length. This is the node that unblocks
+  long-sequence pipelines that would otherwise OOM on a full IMAGE batch.
+* **AM Write Video ← `video`** — packet-level remux (`save_to`) when
+  source/dest containers match, decode+re-encode otherwise; no IMAGE
+  materialization.
+* **AM Reformat / Grade / Grade RGB / Color Correct / OCIO Colorspace /
+  OCIO Log Convert / Frame Range / Reverse Sequence** — VIDEO in + out,
+  returning a *lazy* wrapper that defers the per-pixel work until a
+  downstream consumer iterates frames. Chains of these collapse from
+  O(N) full-batch materializations to O(1) — peak RAM ≈ source batch +
+  one frame's working buffers.
+
+Mixing IMAGE and VIDEO branches in the same graph is valid (e.g. an
+IMAGE branch for color-managed inference plus a VIDEO branch for an API
+call that takes the original file).
 
 ## Installation
 
@@ -210,11 +248,12 @@ python -m py_compile $(find . -name '*.py' -not -path './__pycache__/*')
 ```
 
 Architecture notes: most of the heavy lifting lives in `_core/`
-(`color.py`, `image_backend.py`, `video_backend.py`, `reformat.py`,
-`sequence.py`, `grade.py`, `seed_registry.py`, `preview.py`,
-`batch_suffix.py`, `_node_replacements.py`). The `am_*.py` node files
-at the top level are mostly INPUT_TYPES + execute() shells over those
-core modules.
+(`color.py`, `color_correct.py`, `image_backend.py`, `video_backend.py`,
+`video_lazy.py`, `reformat.py`, `sequence.py`, `grade.py`,
+`seed_registry.py`, `preview.py`, `batch_suffix.py`). The `am_*.py` node
+files at the top level are mostly INPUT_TYPES + execute() shells over
+those core modules. VIDEO-socket lazy-transform wrappers live in
+`_core/video_lazy.py`.
 
 ## Contributing
 

@@ -78,6 +78,7 @@ import torch  # noqa: F401  (kept for type-compatibility w/ ComfyUI passthrough)
 from ._core import (
     batch_suffix, color, image_backend, preview, reformat, sequence, seed_registry,
 )
+from ._core import video_lazy
 
 # ComfyUI's global ``--disable-metadata`` flag — same kill-switch that gates
 # the stock SaveImage/SaveVideo nodes. Imported defensively so the module
@@ -86,6 +87,23 @@ try:
     from comfy.cli_args import args as _comfy_args  # type: ignore[import-not-found]
 except Exception:  # pragma: no cover
     _comfy_args = None
+
+# Native ComfyUI VIDEO type — see docs/media-io-sync-rule.md invariant 28.
+# Streaming per-frame branch: peak RAM stays at ONE frame.
+try:
+    from comfy_api.v0_0_2 import InputImpl as _ComfyInputImpl  # type: ignore[import-not-found]
+    _VIDEO_TYPE_AVAILABLE = True
+except ImportError:
+    _ComfyInputImpl = None  # type: ignore[assignment]
+    _VIDEO_TYPE_AVAILABLE = False
+
+# PyAV — already a ComfyUI dependency. Defensive in case it's missing.
+try:
+    import av as _av  # type: ignore[import-not-found]
+    _PYAV_AVAILABLE = True
+except ImportError:
+    _av = None  # type: ignore[assignment]
+    _PYAV_AVAILABLE = False
 
 log = logging.getLogger("am_vfx_tools.write_image")
 
@@ -489,21 +507,35 @@ class AMImageWrite:
                     ),
                     "lazy": True,
                 }),
+                # VIDEO input — invariant 28. Non-lazy so check_lazy_status
+                # can see whether it's wired and skip image/mask.
+                "video": ("VIDEO", {
+                    "tooltip": (
+                        "Optional VIDEO input. When wired, iterates the "
+                        "source frame-by-frame via PyAV and writes each EXR "
+                        "— peak RAM stays at ONE frame regardless of "
+                        "source length. Per-frame OCIO + Reformat + dtype "
+                        "apply (driven by this node's widgets). Upstream "
+                        "image/mask are lazy-skipped. MASK is dropped — "
+                        "write RGB only; wire `image` if you need mask "
+                        "handling. `VideoFromComponents` upstream works but "
+                        "with reduced RAM benefit (batch already in memory)."
+                    ),
+                }),
             },
         }
 
     # Output socket order — kept symmetric across the four media-IO nodes
-    # (see media-io-sync-rule.md invariant 14a). Tail matches AM Video
-    # Write: `resolved_path, info, width, height, frame_rate, frame_count`.
-    # `frame_rate` is a passthrough of the widget value (or -1 sentinel)
-    # so downstream nodes can read what was actually written into the
-    # header without re-loading the file.
+    # Output socket order — see media-io-sync-rule.md invariants 14a + 28.
+    # `video` appended as a passthrough socket (mirrors AM Video Write).
     RETURN_TYPES = (
         "IMAGE", "MASK", "STRING", "STRING", "INT", "INT", "FLOAT", "INT",
+        "VIDEO",
     )
     RETURN_NAMES = (
         "image", "mask", "resolved_path", "info",
         "width", "height", "frame_rate", "frame_count",
+        "video",
     )
     OUTPUT_TOOLTIPS = (
         "Sliced IMAGE passthrough — the input image post-frame-slice / "
@@ -518,6 +550,10 @@ class AMImageWrite:
         "Frame rate widget passthrough — the value written into file metadata "
         "(-1 = no fps metadata was emitted).",
         "Number of files written.",
+        "VIDEO passthrough — when the IMAGE branch fired, wraps the IMAGE "
+        "batch in a `VideoFromComponents` (zero copy). When the VIDEO "
+        "branch fired, emits the input VIDEO as-is. None on no-op. "
+        "Lets graphs chain post-write VIDEO downstream without re-reading.",
     )
     FUNCTION = "execute"
     CATEGORY = "AM VFX Tools"
@@ -566,11 +602,17 @@ class AMImageWrite:
           Color-correction / sampler chains feeding this node are
           skipped, matching the artist's mental model of "behave as a
           Read node".
+        - `video` wired (non-None) → return `[]`. The VIDEO streaming
+          branch handles the encode by iterating the source — IMAGE/MASK
+          are not needed. `video` is non-lazy so this kwarg is populated
+          by the time check_lazy_status fires.
         - `load_saved_from_disk=False` (write mode) → return whichever
           of `image`/`mask` is wired and not yet evaluated. ComfyUI
           fetches them, then calls execute() with the populated values.
         """
         if kwargs.get("load_saved_from_disk"):
+            return []
+        if kwargs.get("video") is not None:
             return []
         needed = []
         # Only request inputs that are still None — already-evaluated
@@ -619,6 +661,11 @@ class AMImageWrite:
         load_saved_from_disk: bool = False,
         image=None,
         mask=None,
+        # VIDEO input — non-lazy. See check_lazy_status() and the
+        # INPUT_TYPES tooltip. When wired, `_execute_video_streaming`
+        # handles the encode frame-by-frame and the IMAGE/MASK branch
+        # below is bypassed entirely.
+        video=None,
         prompt: Optional[Dict[str, Any]] = None,
     ):
         log.info(
@@ -648,8 +695,35 @@ class AMImageWrite:
                 output_dtype=output_dtype, show_preview=show_preview,
             )
 
+        # VIDEO streaming branch — see docs/media-io-sync-rule.md invariant 28.
+        # When a native VIDEO is wired, iterate the source frame-by-frame and
+        # write each EXR. Peak RAM stays at one frame regardless of source
+        # length. check_lazy_status already short-circuited the image/mask
+        # upstream eval, so those are None here by design.
+        if video is not None:
+            return self._execute_video_streaming(
+                video=video,
+                file_path=file_path, ext=ext,
+                seed=seed, use_batch=use_batch,
+                frame_rate=frame_rate,
+                use_frame_numbers=use_frame_numbers,
+                start_frame=start_frame, padding=padding,
+                bit_depth=bit_depth, compression=compression,
+                working_colorspace=working_colorspace,
+                raw_data=raw_data, output_colorspace=output_colorspace,
+                embed_workflow=embed_workflow,
+                reformat_mode=reformat_mode, scale=scale, preset=preset,
+                target_width=target_width, target_height=target_height,
+                resize_type=resize_type, filter=filter,
+                output_dtype=output_dtype, show_preview=show_preview,
+                prompt=prompt,
+            )
+
         if image is None:
-            log.warning("[am_vfx_tools/write_image] `image` input is not wired — write skipped")
+            log.warning(
+                "[am_vfx_tools/write_image] neither `image` nor `video` input is "
+                "wired — write skipped"
+            )
             return self._noop(None)
 
         # Seed sentinel resolution. `seed == -1` means "unset" — scan
@@ -955,14 +1029,43 @@ class AMImageWrite:
         if rf_frag:
             info_str = f"{info_str} | {rf_frag}"
 
+        # VIDEO passthrough output — wrap the written IMAGE batch in a
+        # VideoFromComponents so downstream nodes can chain the result.
+        video_passthrough = self._build_video_passthrough(sliced, float(frame_rate))
+
         return {
             "ui": ui_payload,
             "result": (
-                # image, mask, resolved_path, info, width, height, frame_rate, frame_count
+                # image, mask, resolved_path, info, width, height,
+                # frame_rate, frame_count, video
                 sliced, mask_out, paths_str, info_str,
                 int(out_w), int(out_h), float(frame_rate), int(len(written)),
+                video_passthrough,
             ),
         }
+
+    @staticmethod
+    def _build_video_passthrough(images, fps: float):
+        """Wrap the IMAGE batch as a VIDEO passthrough output.
+
+        Mirrors AM Read Image's `_make_video_socket` — zero-copy
+        VideoFromComponents reference. Returns None when comfy_api is
+        unavailable or fps is non-positive (sentinel "no fps metadata").
+        """
+        if not _VIDEO_TYPE_AVAILABLE or images is None:
+            return None
+        try:
+            from fractions import Fraction as _Fraction
+            rate = _Fraction(fps if fps > 0 else 1).limit_denominator(1_000_000)
+            from comfy_api.v0_0_2 import Types as _ComfyTypes  # local import to keep top tidy
+            return _ComfyInputImpl.VideoFromComponents(
+                _ComfyTypes.VideoComponents(images=images, frame_rate=rate),
+            )
+        except Exception as e:  # noqa: BLE001
+            log.warning(
+                "[am_vfx_tools/write_image] VIDEO passthrough build failed (%s); None", e,
+            )
+            return None
 
     @staticmethod
     def _build_workflow_metadata(
@@ -1009,6 +1112,344 @@ class AMImageWrite:
             out["comfyui/batch"] = str(int(batch_no))
 
         return out or None
+
+    # VIDEO streaming mode — invariant 28.
+    #
+    # Iterates the wired VIDEO source one frame at a time and writes each
+    # frame to its target EXR. Peak RAM = one frame. Per-frame OCIO +
+    # Reformat + dtype apply (same widgets as the IMAGE branch). MASK is
+    # dropped (no MASK input in this branch). frame_mode/first_frame/
+    # last_frame are NOT consulted — every source frame is written
+    # starting at `start_frame`. Slice upstream if you need a subset.
+    #
+    # Two source subtypes:
+    #   * VideoFromFile: open via PyAV, iterate decoded frames.
+    #   * VideoFromComponents: iterate the already-decoded tensor slice
+    #     by slice (no extra full-batch copy added on top).
+
+    def _execute_video_streaming(
+        self, *, video, file_path, ext,
+        seed, use_batch, frame_rate, use_frame_numbers,
+        start_frame, padding,
+        bit_depth, compression,
+        working_colorspace, raw_data, output_colorspace, embed_workflow,
+        reformat_mode, scale, preset, target_width, target_height,
+        resize_type, filter, output_dtype, show_preview,
+        prompt,
+    ):
+        if not _VIDEO_TYPE_AVAILABLE:
+            log.warning(
+                "[am_vfx_tools/write_image] VIDEO streaming requested but "
+                "comfy_api.v0_0_2 is not importable — falling back to "
+                "no-op. Pin ComfyUI >= 0.3.48."
+            )
+            return self._noop(None)
+        if not _PYAV_AVAILABLE:
+            log.warning(
+                "[am_vfx_tools/write_image] VIDEO streaming: PyAV is not importable. "
+                "Falling back to no-op."
+            )
+            return self._noop(None)
+
+        # 1. Resolve path. Manual-only — mirrors the IMAGE-branch logic
+        #    (expandvars/expanduser, ext-append, batch slot). This pack
+        #    has no Auto / template-rendering mode.
+        _batch_n: Optional[int] = None
+        if not file_path:
+            log.warning(
+                "[am_vfx_tools/write_image] VIDEO streaming: empty file_path"
+            )
+            return self._noop(None)
+        base_path = os.path.expandvars(os.path.expanduser(file_path))
+        _stem, _ext = os.path.splitext(base_path)
+        if not _ext and ext:
+            base_path = f"{base_path}.{ext.lstrip('.')}"
+        if use_batch:
+            _batch_n, full_path_template = batch_suffix.resolve_for_manual_path(base_path)
+        else:
+            full_path_template = base_path
+
+        # 2. Seed sentinel resolution (matches IMAGE branch).
+        if int(seed) == -1:
+            looked_up = seed_registry.find_seed_for_prompt(prompt)
+            if looked_up is not None:
+                seed = int(looked_up)
+
+        # 3. Workflow-metadata builder (matches IMAGE branch).
+        disable_meta = bool(_comfy_args and getattr(_comfy_args, "disable_metadata", False))
+        if embed_workflow and not disable_meta:
+            workflow_meta = self._build_workflow_metadata(
+                embed_workflow=True,
+                prompt=prompt,
+                seed=int(seed),
+                batch_no=_batch_n,
+            )
+        else:
+            workflow_meta = None
+
+        # 4. OCIO processor (working_cs → output_cs). Matches IMAGE branch.
+        wcs_resolved = color.resolve_choice_to_cs(working_colorspace)
+        ocs_resolved = color.resolve_choice_to_cs(output_colorspace)
+        proc: Optional[color.ColorProcessor] = None
+        if not raw_data:
+            try:
+                proc = color.ColorProcessor(wcs_resolved, ocs_resolved, raw_data=raw_data)
+            except Exception as e:  # noqa: BLE001
+                log.warning(
+                    "[am_vfx_tools/write_image] VIDEO streaming: OCIO build failed "
+                    "(%s); writing untransformed", e,
+                )
+
+        # 5. Make parent dir of the first output (handles fresh-shot paths).
+        first_target = sequence.expand_frame_pattern(
+            full_path_template, int(start_frame), padding,
+        )
+        try:
+            os.makedirs(os.path.dirname(first_target) or ".", exist_ok=True)
+        except OSError as e:
+            log.warning(
+                "[am_vfx_tools/write_image] VIDEO streaming: mkdir failed for "
+                "%s: %s", first_target, e,
+            )
+            return self._noop(None)
+
+        compression_value = _strip_compression_prefix(compression)
+        color_space_tag = (
+            ocs_resolved if ocs_resolved and ocs_resolved != color.PASSTHROUGH else None
+        )
+        frame_rate_metadata = (
+            float(frame_rate) if float(frame_rate) > 0 else None
+        )
+
+        written: list[str] = []
+        out_width = out_height = 0
+        is_lazy_transform = isinstance(video, video_lazy.LazyVideoTransform)
+        is_from_file = (
+            not is_lazy_transform
+            and isinstance(video, _ComfyInputImpl.VideoFromFile)
+        )
+
+        # 6. Iterate the source — three branches:
+        #    * LazyVideoTransform: call iter_frames() so any chained AM
+        #      transforms (Reformat, future Grade/OCIO) apply per-frame
+        #      without materialising the IMAGE batch. See invariant 28
+        #      and `_core/video_lazy.py`.
+        #    * VideoFromFile: PyAV-decode directly.
+        #    * VideoFromComponents: already-decoded tensor; slice it.
+        try:
+            if is_lazy_transform:
+                for i, (np_frame, _alpha) in enumerate(video.iter_frames()):
+                    # The lazy chain already applied any cascaded
+                    # transforms (Reformat, etc.). This node's own
+                    # reformat / OCIO / dtype still apply in
+                    # _write_streamed_frame (per the node's widgets) —
+                    # they compose on top of the lazy chain's transforms.
+                    target = sequence.expand_frame_pattern(
+                        full_path_template, int(start_frame) + i, padding,
+                    )
+                    np_frame = np_frame.astype(np.float32, copy=False)
+                    wrote_target = self._write_streamed_frame(
+                        np_frame, target,
+                        proc=proc,
+                        reformat_mode=reformat_mode, scale=scale,
+                        preset=preset,
+                        target_width=target_width, target_height=target_height,
+                        resize_type=resize_type, filter_name=filter,
+                        bit_depth=bit_depth, compression=compression_value,
+                        color_space_tag=color_space_tag,
+                        workflow_meta=workflow_meta,
+                        frame_rate=frame_rate_metadata,
+                    )
+                    if wrote_target:
+                        written.append(wrote_target)
+                        if not out_width:
+                            out_height, out_width = np_frame.shape[0], np_frame.shape[1]
+            elif is_from_file:
+                src = video.get_stream_source()
+                container = _av.open(src)
+                try:
+                    if not container.streams.video:
+                        log.warning(
+                            "[am_vfx_tools/write_image] VIDEO streaming: no video "
+                            "stream in source"
+                        )
+                        return self._noop(None)
+                    vstream = container.streams.video[0]
+                    for i, av_frame in enumerate(container.decode(vstream)):
+                        np_frame = (
+                            av_frame.to_ndarray(format="rgb24").astype(np.float32)
+                            / 255.0
+                        )
+                        target = sequence.expand_frame_pattern(
+                            full_path_template, int(start_frame) + i, padding,
+                        )
+                        wrote_target = self._write_streamed_frame(
+                            np_frame, target,
+                            proc=proc,
+                            reformat_mode=reformat_mode, scale=scale,
+                            preset=preset,
+                            target_width=target_width, target_height=target_height,
+                            resize_type=resize_type, filter_name=filter,
+                            bit_depth=bit_depth, compression=compression_value,
+                            color_space_tag=color_space_tag,
+                            workflow_meta=workflow_meta,
+                            frame_rate=frame_rate_metadata,
+                        )
+                        if wrote_target:
+                            written.append(wrote_target)
+                            if not out_width:
+                                out_height, out_width = np_frame.shape[0], np_frame.shape[1]
+                finally:
+                    container.close()
+            else:
+                # VideoFromComponents — already-decoded tensor in RAM.
+                components = video.get_components()
+                images_tensor = components.images
+                n_frames = int(images_tensor.shape[0])
+                for i in range(n_frames):
+                    np_frame = images_tensor[i].detach().cpu().numpy()
+                    if np_frame.shape[-1] >= 4:
+                        np_frame = np.ascontiguousarray(np_frame[..., :3])
+                    np_frame = np_frame.astype(np.float32, copy=False)
+                    target = sequence.expand_frame_pattern(
+                        full_path_template, int(start_frame) + i, padding,
+                    )
+                    wrote_target = self._write_streamed_frame(
+                        np_frame, target,
+                        proc=proc,
+                        reformat_mode=reformat_mode, scale=scale,
+                        preset=preset,
+                        target_width=target_width, target_height=target_height,
+                        resize_type=resize_type, filter_name=filter,
+                        bit_depth=bit_depth, compression=compression_value,
+                        color_space_tag=color_space_tag,
+                        workflow_meta=workflow_meta,
+                        frame_rate=frame_rate_metadata,
+                    )
+                    if wrote_target:
+                        written.append(wrote_target)
+                        if not out_width:
+                            out_height, out_width = np_frame.shape[0], np_frame.shape[1]
+        except Exception as e:  # noqa: BLE001 — log + soft fail
+            log.exception(
+                "[am_vfx_tools/write_image] VIDEO streaming: iteration failed (%s); "
+                "wrote %d frames before error", e, len(written),
+            )
+            if not written:
+                return self._noop(None)
+
+        # 7. Build info string + placeholder IMAGE/MASK outputs (the VIDEO
+        #    branch consciously avoids materialising the IMAGE batch).
+        info_str = (
+            f"{int(out_width)}x{int(out_height)} {bit_depth} {ocs_resolved} "
+            f"via VIDEO streaming, {len(written)} frames written"
+        )
+        rf_frag = reformat.info_fragment(
+            mode=reformat_mode,
+            scale=float(scale),
+            preset=preset,
+            target_w=int(target_width),
+            target_h=int(target_height),
+            resize_type=resize_type,
+            filter_name=filter,
+            output_dtype=output_dtype,
+            src_w=int(out_width), src_h=int(out_height),
+        )
+        if rf_frag:
+            info_str = f"{info_str} | {rf_frag}"
+
+        placeholder = torch.zeros((1, 64, 64, 3), dtype=torch.float32)
+        empty_mask = torch.zeros((1, 64, 64), dtype=torch.float32)
+        paths_str = "\n".join(written) if written else ""
+
+        if written:
+            ui_payload = self._ui_payload(
+                placeholder, written, paths_str, show_preview, working_colorspace,
+            )
+        else:
+            ui_payload = {"text": ["(no frames written)"]}
+
+        out_fps = float(frame_rate) if float(frame_rate) > 0 else 0.0
+
+        return {
+            "ui": ui_payload,
+            "result": (
+                # image, mask, resolved_path, info, width, height,
+                # frame_rate, frame_count, video
+                placeholder, empty_mask, paths_str, info_str,
+                int(out_width), int(out_height),
+                out_fps, len(written),
+                video,  # passthrough — the input VIDEO
+            ),
+        }
+
+    def _write_streamed_frame(
+        self, pixels_np: np.ndarray, target: str, *,
+        proc: Optional[Any],
+        reformat_mode: str, scale: float, preset: str,
+        target_width: int, target_height: int,
+        resize_type: str, filter_name: str,
+        bit_depth: str, compression: Optional[str],
+        color_space_tag: Optional[str],
+        workflow_meta: Optional[Dict[str, str]],
+        frame_rate: Optional[float],
+    ) -> Optional[str]:
+        """Apply reformat + OCIO + write a single frame to *target*.
+
+        Returns the resolved target path on success, ``None`` on failure
+        (per-frame failures are logged + skipped — the VIDEO streaming
+        loop continues with the remaining frames).
+        """
+        if reformat_mode != reformat.MODE_OFF:
+            try:
+                pixels_np = reformat.reformat_array(
+                    pixels_np,
+                    mode=reformat_mode,
+                    scale=float(scale),
+                    preset=preset,
+                    target_w=int(target_width),
+                    target_h=int(target_height),
+                    resize_type=resize_type,
+                    filter_name=filter_name,
+                    output_dtype=reformat.DTYPE_FP32,
+                )
+            except Exception as e:  # noqa: BLE001
+                log.warning(
+                    "[am_vfx_tools/write_image] VIDEO streaming: reformat failed "
+                    "for %s (%s); writing original pixels", target, e,
+                )
+
+        if proc is not None and not proc.is_identity:
+            try:
+                proc.apply_inplace(pixels_np)
+            except Exception as e:  # noqa: BLE001
+                log.warning(
+                    "[am_vfx_tools/write_image] VIDEO streaming: OCIO apply failed "
+                    "for %s (%s); writing untransformed pixels", target, e,
+                )
+
+        per_frame_meta = workflow_meta if workflow_meta else None
+
+        try:
+            image_backend.write_image(
+                target,
+                pixels_np,
+                bit_depth=bit_depth,
+                compression=compression,
+                color_space_tag=color_space_tag,
+                metadata={"Software": "comfyui"},
+                workflow_metadata=per_frame_meta,
+                frame_rate=frame_rate,
+            )
+        except Exception as e:  # noqa: BLE001
+            log.warning(
+                "[am_vfx_tools/write_image] VIDEO streaming: write failed for %s: %s",
+                target, e,
+            )
+            return None
+
+        log.info("[am_vfx_tools/write_image] VIDEO streaming: wrote %s", target)
+        return target
 
     @staticmethod
     def _slice_indices(
@@ -1082,7 +1523,9 @@ class AMImageWrite:
         )
         return {
             "ui": {"text": ["(no write)"]},
-            "result": (image, mask_stub, "", "(no write)", w, h, 0.0, 0),
+            "result": (
+                image, mask_stub, "", "(no write)", w, h, 0.0, 0, None,
+            ),
         }
 
     # ------------------------------------------------------------------
@@ -1224,13 +1667,19 @@ class AMImageWrite:
         ui_payload = self._ui_payload(
             out_image, loaded_paths, paths_str, show_preview, working_colorspace,
         )
+        # VIDEO passthrough — wrap the loaded IMAGE batch (read-only mode
+        # decoded files from disk; this is what was "written" earlier and
+        # is now being re-emitted).
+        out_fps = float(frame_rate) if float(frame_rate) > 0 else 0.0
+        video_passthrough = self._build_video_passthrough(out_image, out_fps)
         return {
             "ui": ui_payload,
             "result": (
                 out_image, out_mask, paths_str, info_str,
                 int(out_w), int(out_h),
-                float(frame_rate) if float(frame_rate) > 0 else 0.0,
+                out_fps,
                 int(len(loaded_paths)),
+                video_passthrough,
             ),
         }
 

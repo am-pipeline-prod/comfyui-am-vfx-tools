@@ -1,4 +1,4 @@
-"""HTTP routes for AM Pipe Work File I/O.
+"""HTTP routes for AM VFX Tools Work File I/O.
 
 All routes are prefixed ``/am-vfx-tools/workfile-io/``. Path-bearing routes run
 through ``sandbox.validate`` before any disk access.
@@ -410,7 +410,7 @@ async def native_dialog_save_route(request: web.Request) -> web.Response:
 # ---------------------------------------------------------------------------
 
 def _workflow_meta(p: Path) -> dict:
-    """Compute the AM Pipe metadata schema for a given workflow path.
+    """Compute the AM VFX Tools metadata schema for a given workflow path.
 
     Mirrors the JS-side stampGraphMetadata() in dialogs.js so callers (e.g.
     the /active route) can return the same shape custom nodes get from

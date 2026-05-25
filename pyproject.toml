@@ -1,15 +1,15 @@
 [project]
 name = "comfyui-am-vfx-tools"
-version = "0.1.0"
-description = "VFX I/O & color toolkit for ComfyUI: image + video read/write (OpenImageIO + PyAV), OCIO 2.x color management, Nuke-style Grade, OpenCV reformat, render-farm-safe Seed, and frame-range slicing. 11 nodes."
+version = "0.2.0"
+description = "VFX I/O & color toolkit for ComfyUI: image + video read/write (OpenImageIO + PyAV), OCIO 2.x color management, Nuke-style Grade + Color Correct, OpenCV reformat, frame-order reverse, render-farm-safe Seed, and frame-range slicing. Native VIDEO sockets on every pixel node for low-RAM streaming. 13 nodes."
 requires-python = ">=3.10"
 license = { text = "MIT" }
 authors = [{ name = "Adrian Meyer", email = "accounts@adrianmeyer.art" }]
 readme = "README.md"
 keywords = [
-    "comfyui", "vfx", "image-io", "video-io",
+    "comfyui", "vfx", "image-io", "video-io", "video",
     "ocio", "color-management", "exr", "openimageio", "pyav",
-    "reformat", "grade", "seed", "frame-range",
+    "reformat", "grade", "color-correct", "seed", "frame-range",
 ]
 classifiers = [
     "Development Status :: 4 - Beta",

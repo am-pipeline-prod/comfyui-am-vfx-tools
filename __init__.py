@@ -1,9 +1,11 @@
 """comfyui-am-vfx-tools — ComfyUI custom-node pack for VFX I/O & color.
 
-Eleven nodes for image / video read+write (OpenImageIO + PyAV), OCIO 2.x
-color management, Nuke-style Grade, OpenCV-backed reformat, render-farm-
-safe Seed, and frame-range slicing — plus a workfile-io subsystem with
-native OS file dialogs for save/load of workflow JSON to absolute paths.
+Thirteen nodes for image / video read+write (OpenImageIO + PyAV), OCIO
+2.x color management, Nuke-style Grade + Color Correct, OpenCV-backed
+reformat, frame-order reverse, render-farm-safe Seed, and frame-range
+slicing — plus a workfile-io subsystem with native OS file dialogs for
+save/load of workflow JSON to absolute paths. All pixel nodes carry
+native ComfyUI VIDEO sockets for low-RAM streaming workflows.
 
 The IO nodes are Manual-mode only — pick a path explicitly via the
 ``file_path`` widget, optionally with a ``####`` / ``%05d`` / ``$F4``
@@ -34,6 +36,7 @@ import os
 from . import routes  # noqa: F401
 from . import routes_workfile  # noqa: F401
 
+from .am_color_correct import AMColorCorrect
 from .am_frame_range import AMFrameRange
 from .am_grade import AMGrade, AMGradeRGB
 from .am_image_read import AMImageRead
@@ -41,6 +44,7 @@ from .am_image_write import AMImageWrite
 from .am_ocio_colorspace import AMOCIOColorspace
 from .am_ocio_log_convert import AMOCIOLogConvert
 from .am_reformat import AMReformat
+from .am_reverse import AMReverseSequence
 from .am_seed import AMSeed
 from .am_video_read import AMVideoRead
 from .am_video_write import AMVideoWrite
@@ -50,12 +54,14 @@ WEB_DIRECTORY = os.path.join(os.path.dirname(os.path.realpath(__file__)), "web")
 NODE_CLASS_MAPPINGS = {
     "AMImageRead":       AMImageRead,
     "AMImageWrite":      AMImageWrite,
+    "AMColorCorrect":    AMColorCorrect,
     "AMFrameRange":      AMFrameRange,
     "AMGrade":           AMGrade,
     "AMGradeRGB":        AMGradeRGB,
     "AMOCIOColorspace":  AMOCIOColorspace,
     "AMOCIOLogConvert":  AMOCIOLogConvert,
     "AMReformat":        AMReformat,
+    "AMReverseSequence": AMReverseSequence,
     "AMSeed":            AMSeed,
     "AMVideoRead":       AMVideoRead,
     "AMVideoWrite":      AMVideoWrite,
@@ -63,18 +69,20 @@ NODE_CLASS_MAPPINGS = {
 NODE_DISPLAY_NAME_MAPPINGS = {
     "AMImageRead":       "AM Read Image",
     "AMImageWrite":      "AM Write Image",
+    "AMColorCorrect":    "AM Color Correct",
     "AMFrameRange":      "AM Frame Range",
     "AMGrade":           "AM Grade",
     "AMGradeRGB":        "AM Grade RGB",
     "AMOCIOColorspace":  "AM OCIO Colorspace",
     "AMOCIOLogConvert":  "AM OCIO Log Convert",
     "AMReformat":        "AM Reformat",
+    "AMReverseSequence": "AM Reverse Sequence",
     "AMSeed":            "AM Seed",
     "AMVideoRead":       "AM Read Video",
     "AMVideoWrite":      "AM Write Video",
 }
 
-logging.getLogger("am_vfx_tools").info("[am-vfx-tools] loaded (11 nodes)")
+logging.getLogger("am_vfx_tools").info("[am-vfx-tools] loaded (13 nodes)")
 
 # Register node-replacement migrations for any breaking shape changes
 # (currently empty — the pack ships at v0.1.0). Wrapped so a failure

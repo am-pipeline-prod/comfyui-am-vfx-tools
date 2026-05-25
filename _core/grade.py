@@ -1,4 +1,4 @@
-"""am-pipe-media-io._core.grade — Nuke Grade math (pure torch).
+"""am-vfx-tools-media-io._core.grade — Nuke Grade math (pure torch).
 
 Shared by :class:`AMGrade` (single float per knob) and :class:`AMGradeRGB`
 (per-channel floats). Both call :func:`grade_apply` with parameter

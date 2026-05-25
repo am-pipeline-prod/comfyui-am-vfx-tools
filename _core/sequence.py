@@ -1,4 +1,4 @@
-"""am-pipe-media-io._core.sequence — frame-pattern parsing + NFS-friendly scan.
+"""am-vfx-tools-media-io._core.sequence — frame-pattern parsing + NFS-friendly scan.
 
 Public surface:
 
@@ -36,8 +36,21 @@ log = logging.getLogger("am_vfx_tools.media-io.sequence")
 
 _PRINTF_RE = re.compile(r"%0?(\d*)d")
 _HASHES_RE = re.compile(r"#+")
-# Trailing-literal: digits before the final extension, e.g. image.0001.exr
-_TRAILING_DIGITS_RE = re.compile(r"(\d+)(\.[^.\\/]+)$")
+# Trailing-literal: digits before the final extension, *separated from the
+# rest of the basename by a dot* — e.g. ``image.0001.exr`` or
+# ``shot01.0042.png``. The leading-dot requirement is what distinguishes
+# a real frame sequence from filenames that merely happen to end with
+# digits (AM Write's ``_b0001`` queue-iteration suffix, the ``_2`` collision
+# suffix from drag-drop, random web images like ``photo42.png``). Without
+# the dot the file is treated as a single literal (no printf form), so
+# single-mode reads do not silently snap to a synthetic neighbour and
+# range/all modes do not try to iterate a "sequence" of one.
+#
+# Match groups: (1) the frame digits, (2) the trailing extension incl. the
+# dot before it. The lookbehind on the leading dot is zero-width, so
+# ``m.start()`` lands on the first digit and the head slice naturally
+# preserves the separator dot when rebuilding the printf form.
+_TRAILING_DIGITS_RE = re.compile(r"(?<=\.)(\d+)(\.[^.\\/]+)$")
 
 
 @dataclass(frozen=True)
@@ -68,6 +81,18 @@ def parse_frame_pattern(filepath: str) -> Tuple[str, Optional[str], int]:
     * ``frame_spec`` — the original token text (``"####"`` / ``"%05d"`` /
       the literal frame digits) or ``None`` when no token is present.
     * ``padding`` — the digit count; ``0`` when *frame_spec* is ``None``.
+
+    Detection rules:
+
+    * Explicit tokens (``####``, ``%0Nd``) always win regardless of how
+      they are positioned in the basename.
+    * Trailing literal digits are only recognised as a frame token when
+      they are preceded by a ``.`` separator (the studio convention,
+      e.g. ``plate.0001.exr``). Filenames that merely end with digits
+      (``output_b0001.exr``, ``photo_42.jpg``, ``image123.png``) are
+      reported as non-sequences — ``frame_spec=None``, ``padding=0``.
+      Callers in single-frame mode read these as literals; range/all
+      modes treat them as a sequence of one.
     """
     fp = filepath.replace("\\", "/")
 
@@ -183,13 +208,13 @@ def detect_sequence_range(filepath: str, *, scan_dir: bool = True) -> SequenceIn
                 except ValueError:
                     continue
     except (FileNotFoundError, NotADirectoryError) as e:
-        log.warning("[am-vfx-tools/sequence] directory missing for %s: %s", pattern, e)
+        log.warning("[am_vfx_tools/sequence] directory missing for %s: %s", pattern, e)
         return SequenceInfo(
             pattern=pattern, padding=padding, first=None, last=None,
             present_set=frozenset(),
         )
     except OSError as e:
-        log.warning("[am-vfx-tools/sequence] scandir failed for %s: %s", directory, e)
+        log.warning("[am_vfx_tools/sequence] scandir failed for %s: %s", directory, e)
         return SequenceInfo(
             pattern=pattern, padding=padding, first=None, last=None,
             present_set=frozenset(),

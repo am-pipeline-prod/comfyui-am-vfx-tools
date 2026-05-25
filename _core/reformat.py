@@ -1,4 +1,4 @@
-"""am-pipe-media-io._core.reformat — shared reformat / dtype-cast helper.
+"""am-vfx-tools-media-io._core.reformat — shared reformat / dtype-cast helper.
 
 Used by the standalone ``AMReformat`` node and embedded in the four
 media-IO nodes (AM Read Image / Read Video / Write Image / Write Video)
@@ -95,11 +95,15 @@ DTYPE_FP32 = "fp32"
 DTYPE_FP16 = "fp16"
 DTYPE_CHOICES = [DTYPE_FP32, DTYPE_FP16]
 # Default applied across every node's `output_dtype` widget. Centralized
-# here so a flip-back is one edit. Currently fp32 — reverted from fp16
-# 2026-05-01 after running into downstream nodes that assume fp32 IMAGE
-# tensors. Feature stays intact; artists who want the memory win flip
-# the per-node widget to fp16 explicitly.
-DEFAULT_DTYPE = DTYPE_FP32
+# here so a flip is one edit. Flipped from fp32 → fp16 on 2026-05-12 by
+# the studio default decision: artists prefer the ~2× memory win on the
+# IMAGE output socket for typical workflows. Internal OCIO + reformat
+# passes still run fp32; only the FINAL IMAGE-output tensor is cast.
+# A 2026-05-01 attempt failed because some downstream nodes assumed
+# fp32 — those have since been addressed via the lazy VIDEO chain
+# (which doesn't pin the IMAGE-output dtype) and per-node fp32 overrides
+# where needed. Flip back here if specific regressions surface.
+DEFAULT_DTYPE = DTYPE_FP16
 
 
 # ---------------------------------------------------------------------------
@@ -569,7 +573,7 @@ def combine_image_mask(
             )
         import cv2  # type: ignore
         log.info(
-            "[am-vfx-tools/reformat] auto-resizing mask from %dx%d to %dx%d (cubic) "
+            "[am_vfx_tools/reformat] auto-resizing mask from %dx%d to %dx%d (cubic) "
             "to match image dims",
             mask_w, mask_h, img_w, img_h,
         )

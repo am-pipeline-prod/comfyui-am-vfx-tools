@@ -1,4 +1,4 @@
-"""am-pipe-media-io._core.batch_suffix — runtime-discovered ``_bNNNN`` slot.
+"""am-vfx-tools-media-io._core.batch_suffix — runtime-discovered ``_bNNNN`` slot.
 
 Mirrors stock ComfyUI's ``folder_paths.get_save_image_path`` counter: scan the
 parent directory for files matching the rendered stem, parse the existing

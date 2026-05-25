@@ -7,13 +7,11 @@ Two ComfyUI nodes that mirror the native Nuke Grade node UI:
 * :class:`AMGradeRGB`  — per-channel floats (``..._r/_g/_b``); the three
   booleans (reverse, black_clamp, white_clamp) stay scalar.
 
-Both call :func:`._core.grade.grade_apply`.
-
-Code-import baseline: ``custom-nodes/nuke-nodes/grade_nodes.py::NukeGrade``
-— but the parameter set, formula, and reverse path are rewritten to
-match Nuke's published Grade math (the upstream version uses a
-simplified lift/gamma/gain formula and has no blackpoint/whitepoint or
-reverse).
+Both call :func:`._core.grade.grade_apply` for the IMAGE branch. Both
+also accept an optional ``video`` input — when wired, return a lazy
+:class:`._core.video_lazy.GradedVideo` wrapper that defers the grade
+until a downstream AM consumer iterates frames. See
+docs/media-io-sync-rule.md invariant 28.
 """
 from __future__ import annotations
 
@@ -23,8 +21,23 @@ from typing import Optional, Tuple
 import torch
 
 from ._core.grade import grade_apply
+from ._core import video_lazy
 
 log = logging.getLogger("am_vfx_tools.media-io.grade")
+
+
+_VIDEO_TOOLTIP = (
+    "Optional VIDEO input. When wired, returns a lazy `GradedVideo` "
+    "wrapper applying the grade per-frame on consumption — no IMAGE "
+    "materialisation here. Alpha (when present) passes through "
+    "untouched. `image` is ignored when `video` is wired. See "
+    "invariant 28."
+)
+_VIDEO_OUT_TOOLTIP = (
+    "Lazy VIDEO output — emits a `GradedVideo` wrapper when `video` is "
+    "wired, else a zero-copy `VideoFromComponents` around the IMAGE "
+    "batch. None when no input is wired."
+)
 
 
 def _split_alpha(image: torch.Tensor) -> Tuple[torch.Tensor, Optional[torch.Tensor]]:
@@ -37,6 +50,38 @@ def _split_alpha(image: torch.Tensor) -> Tuple[torch.Tensor, Optional[torch.Tens
 
 def _vec3(r: float, g: float, b: float, ref: torch.Tensor) -> torch.Tensor:
     return torch.tensor([r, g, b], device=ref.device, dtype=ref.dtype)
+
+
+# Native ComfyUI VIDEO type — see docs/media-io-sync-rule.md invariant 28.
+# Used for the zero-copy VIDEO output socket when the IMAGE branch fires.
+try:
+    from comfy_api.v0_0_2 import InputImpl as _ComfyInputImpl  # type: ignore[import-not-found]
+    from comfy_api.v0_0_2 import Types as _ComfyTypes  # type: ignore[import-not-found]
+    _VIDEO_TYPE_AVAILABLE = True
+except ImportError:
+    _ComfyInputImpl = None  # type: ignore[assignment]
+    _ComfyTypes = None  # type: ignore[assignment]
+    _VIDEO_TYPE_AVAILABLE = False
+
+
+def _build_video_socket(images):
+    """Wrap a graded IMAGE batch in a VideoFromComponents (zero copy).
+
+    No fps context on grade nodes — defaults to 25 (matches AM Reformat).
+    Returns None when comfy_api is unavailable.
+    """
+    if not _VIDEO_TYPE_AVAILABLE or images is None:
+        return None
+    try:
+        from fractions import Fraction as _Fraction
+        return _ComfyInputImpl.VideoFromComponents(
+            _ComfyTypes.VideoComponents(
+                images=images, frame_rate=_Fraction(25, 1),
+            ),
+        )
+    except Exception as e:  # noqa: BLE001
+        log.warning("[am_vfx_tools/grade] VIDEO socket build failed (%s); None", e)
+        return None
 
 
 class AMGrade:
@@ -61,13 +106,15 @@ class AMGrade:
                 "image": ("IMAGE", {
                     "tooltip": "Image batch to grade.",
                 }),
+                "video": ("VIDEO", {"tooltip": _VIDEO_TOOLTIP}),
             },
         }
 
-    RETURN_TYPES = ("IMAGE",)
-    RETURN_NAMES = ("image",)
+    RETURN_TYPES = ("IMAGE", "VIDEO")
+    RETURN_NAMES = ("image", "video")
     OUTPUT_TOOLTIPS = (
         "Graded image batch (same shape and channels as the input).",
+        _VIDEO_OUT_TOOLTIP,
     )
     FUNCTION = "execute"
     CATEGORY = "AM VFX Tools/Color"
@@ -85,10 +132,34 @@ class AMGrade:
         black_clamp: bool,
         white_clamp: bool,
         image: Optional[torch.Tensor] = None,
+        video=None,
     ):
+        # VIDEO branch — return a lazy GradedVideo wrapper. No
+        # materialisation here; downstream AM consumer iterates.
+        if video is not None:
+            if image is not None:
+                log.warning(
+                    "[am_vfx_tools/grade] both VIDEO and IMAGE inputs wired — "
+                    "VIDEO wins; IMAGE ignored"
+                )
+            wrapped = video_lazy.GradedVideo(
+                video,
+                blackpoint=(blackpoint, blackpoint, blackpoint),
+                whitepoint=(whitepoint, whitepoint, whitepoint),
+                lift=(lift, lift, lift),
+                gain=(gain, gain, gain),
+                multiply=(multiply, multiply, multiply),
+                offset=(offset, offset, offset),
+                gamma=(gamma, gamma, gamma),
+                reverse=reverse,
+                black_clamp=black_clamp, white_clamp=white_clamp,
+            )
+            placeholder = torch.zeros((1, 64, 64, 3), dtype=torch.float32)
+            return (placeholder, wrapped)
+
         if image is None:
-            log.warning("[am-vfx-tools/grade] `image` input is not wired — passing through")
-            return (torch.zeros((1, 64, 64, 3), dtype=torch.float32),)
+            log.warning("[am_vfx_tools/grade] no input wired — passing through")
+            return (torch.zeros((1, 64, 64, 3), dtype=torch.float32), None)
 
         rgb, alpha = _split_alpha(image)
         out_rgb = grade_apply(
@@ -108,7 +179,9 @@ class AMGrade:
         out_image = (
             torch.cat([out_rgb, alpha], dim=-1) if alpha is not None else out_rgb
         )
-        return (out_image,)
+        # VIDEO output — zero-copy VideoFromComponents wrapping the graded
+        # batch. Same pattern as AM Reformat / AM Read Image.
+        return (out_image, _build_video_socket(out_image))
 
 
 class AMGradeRGB:
@@ -149,13 +222,15 @@ class AMGradeRGB:
                 "image": ("IMAGE", {
                     "tooltip": "Image batch to grade.",
                 }),
+                "video": ("VIDEO", {"tooltip": _VIDEO_TOOLTIP}),
             },
         }
 
-    RETURN_TYPES = ("IMAGE",)
-    RETURN_NAMES = ("image",)
+    RETURN_TYPES = ("IMAGE", "VIDEO")
+    RETURN_NAMES = ("image", "video")
     OUTPUT_TOOLTIPS = (
         "Graded image batch (same shape and channels as the input).",
+        _VIDEO_OUT_TOOLTIP,
     )
     FUNCTION = "execute"
     CATEGORY = "AM VFX Tools/Color"
@@ -173,10 +248,32 @@ class AMGradeRGB:
         black_clamp: bool,
         white_clamp: bool,
         image: Optional[torch.Tensor] = None,
+        video=None,
     ):
+        if video is not None:
+            if image is not None:
+                log.warning(
+                    "[am_vfx_tools/grade-rgb] both VIDEO and IMAGE inputs wired "
+                    "— VIDEO wins; IMAGE ignored"
+                )
+            wrapped = video_lazy.GradedVideo(
+                video,
+                blackpoint=(blackpoint_r, blackpoint_g, blackpoint_b),
+                whitepoint=(whitepoint_r, whitepoint_g, whitepoint_b),
+                lift=(lift_r, lift_g, lift_b),
+                gain=(gain_r, gain_g, gain_b),
+                multiply=(multiply_r, multiply_g, multiply_b),
+                offset=(offset_r, offset_g, offset_b),
+                gamma=(gamma_r, gamma_g, gamma_b),
+                reverse=reverse,
+                black_clamp=black_clamp, white_clamp=white_clamp,
+            )
+            placeholder = torch.zeros((1, 64, 64, 3), dtype=torch.float32)
+            return (placeholder, wrapped)
+
         if image is None:
-            log.warning("[am-vfx-tools/grade-rgb] `image` input is not wired — passing through")
-            return (torch.zeros((1, 64, 64, 3), dtype=torch.float32),)
+            log.warning("[am_vfx_tools/grade-rgb] no input wired — passing through")
+            return (torch.zeros((1, 64, 64, 3), dtype=torch.float32), None)
 
         rgb, alpha = _split_alpha(image)
         out_rgb = grade_apply(
@@ -196,7 +293,7 @@ class AMGradeRGB:
         out_image = (
             torch.cat([out_rgb, alpha], dim=-1) if alpha is not None else out_rgb
         )
-        return (out_image,)
+        return (out_image, _build_video_socket(out_image))
 
 
 __all__ = ["AMGrade", "AMGradeRGB"]

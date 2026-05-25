@@ -38,7 +38,7 @@ except ImportError:
 
 class AMPipeMediaIOExtension(ComfyExtension):  # type: ignore[misc]
     """ComfyExtension hook — registers all node-replacement migrations
-    for the `am-pipe-media-io` pack.
+    for the `am-vfx-tools-media-io` pack.
 
     Add ONE `io.NodeReplace(...)` entry per breaking change. Each entry
     is independent — chained migrations (v1→v2→v3 on the same node)
@@ -101,7 +101,7 @@ class AMPipeMediaIOExtension(ComfyExtension):  # type: ignore[misc]
         # §"How to do a _v<N+1> bump" for the full recipe and the
         # `input_mapping` field semantics table.
 
-        log.debug("am-pipe-media-io: no node replacements registered (clean state)")
+        log.debug("am-vfx-tools-media-io: no node replacements registered (clean state)")
 
 
 async def register_replacements():
@@ -111,7 +111,7 @@ async def register_replacements():
     """
     if not _V3_API_AVAILABLE:
         log.info(
-            "am-pipe-media-io: comfy_api.v0_0_2 not available "
+            "am-vfx-tools-media-io: comfy_api.v0_0_2 not available "
             "(ComfyUI < 0.3.48?) — saved-workflow auto-migration disabled. "
             "Nodes themselves load normally."
         )

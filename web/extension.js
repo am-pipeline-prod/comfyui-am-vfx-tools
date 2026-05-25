@@ -336,6 +336,23 @@ function setNodeWidget(node, name, value) {
   return true;
 }
 
+// Pick the dropdown option whose bare colorspace name (the part after the
+// last "/", matching the backend's `resolve_choice_to_cs`) equals
+// `bareName`. Returns the actual option string ("Display/sRGB - Display"
+// on a categorised config, "sRGB - Display" on a flat one) so the widget
+// value matches one of the literal choices the user's OCIO setup exposes.
+function pickColorspaceChoice(node, widgetName, bareName) {
+  const w = node?.widgets?.find?.((x) => x.name === widgetName);
+  const choices = w?.options?.values;
+  if (!Array.isArray(choices)) return null;
+  for (const c of choices) {
+    if (typeof c !== "string") continue;
+    const stripped = c.includes("/") ? c.slice(c.lastIndexOf("/") + 1) : c;
+    if (stripped === bareName) return c;
+  }
+  return null;
+}
+
 async function createAmReadFromDrop(canvas, kind, info) {
   const nodeName = (kind === "video") ? "AMVideoRead" : "AMImageRead";
   const ctor = LiteGraph?.createNode || globalThis.LiteGraph?.createNode;
@@ -376,6 +393,39 @@ async function createAmReadFromDrop(canvas, kind, info) {
   setNodeWidget(node, "file_path", widgetPath);
   app.graph.add(node);
   setNodeWidget(node, "file_path", widgetPath);
+
+  // For non-EXR image drops, override the node's ACES-leaning default
+  // with `sRGB - Display` — JPG / PNG / TIFF / HEIC / WEBP are almost
+  // always authored in display sRGB, and getting the source CS right at
+  // drop time saves the artist a click. EXR keeps the ACES default
+  // (scene-linear pipeline assumption); video drops are handled by the
+  // AM Read Video node's own Gamma 2.2 Rec.709 default, which is what
+  // dailies expect.
+  if (kind === "image" && info?.format && info.format.toLowerCase() !== "exr") {
+    const csChoice = pickColorspaceChoice(node, "input_colorspace", "sRGB - Display");
+    if (csChoice) {
+      setNodeWidget(node, "input_colorspace", csChoice);
+    } else {
+      console.warn(
+        "[AM VFX Tools] dropped non-EXR image but `sRGB - Display` is not in " +
+        "the input_colorspace dropdown — leaving node default in place. " +
+        `format=${info.format}`,
+      );
+    }
+  }
+
+  // For image drops that are NOT part of a recognisable frame sequence,
+  // flip `frame_mode` from its default `all` (which would scan the
+  // parent dir for sibling frames) to `single`. The backend reports
+  // `frame_padding=0` when the path has no `####` / `%0Nd` token and no
+  // dot-separated trailing digit group — i.e. the file is a one-shot
+  // (reference image, web JPG, batch-suffixed `_bNNNN`, ...). For real
+  // sequences (`plate.0042.exr`) padding is > 0 and we leave `all` in
+  // place so the dragged frame pulls in its full sequence. Video drops
+  // have no `frame_mode` widget so we skip them.
+  if (kind === "image" && (info?.frame_padding ?? 0) === 0) {
+    setNodeWidget(node, "frame_mode", "single");
+  }
 
   node.setDirtyCanvas?.(true, true);
   return node;
@@ -443,6 +493,94 @@ function installDropHandler() {
   _stockHandleFile = app.handleFile.bind(app);
   app.handleFile = amHandleFile;
   console.info("[am-vfx-tools] drag-drop handler installed");
+}
+
+// Convert a DOM drop-event clientX/Y into canvas-space coordinates the
+// same way LiteGraph's own drop handler would set `last_drop_position`.
+// Accounts for the canvas element's bounding rect, the user's pan
+// (`ds.offset`) and zoom (`ds.scale`). Returns null when the canvas
+// element / ds isn't accessible yet.
+function eventToCanvasPos(canvas, event) {
+  const canvasEl = canvas?.canvas;
+  if (!canvasEl) return null;
+  const rect = canvasEl.getBoundingClientRect();
+  const ds = canvas.ds || {};
+  const scale = ds.scale || 1;
+  const ox = (ds.offset && ds.offset[0]) || 0;
+  const oy = (ds.offset && ds.offset[1]) || 0;
+  return [
+    (event.clientX - rect.left) / scale - ox,
+    (event.clientY - rect.top)  / scale - oy,
+  ];
+}
+
+// Cascade offset (canvas units) applied to each subsequent node in a
+// multi-file drop, so they don't stack on top of each other. Matches the
+// classic OS "new file cascade" feel; small enough to keep the group
+// visually together, large enough that titles aren't fully overlapped.
+const MULTI_DROP_OFFSET_X = 40;
+const MULTI_DROP_OFFSET_Y = 40;
+
+// Capture-phase drop listener for multi-file media drops. Stock ComfyUI's
+// drop handler only forwards the first file from `dataTransfer.files` to
+// `handleFile`, so dragging 5 reference images creates exactly one node.
+// We intercept before ComfyUI sees the event when *every* file in the
+// drop is a recognised media kind, then dispatch each one through the
+// existing single-file pipeline (`amHandleFile`) with a cascading drop
+// position.
+//
+// We deliberately bail (don't intercept) when:
+//   * the drop has only one file — the existing handleFile wrap covers it
+//   * any file is non-media — let ComfyUI's stock handler deal with the
+//     mix (it'll route the media ones through our handleFile wrap one
+//     at a time, and handle a JSON workflow / safetensors / etc. itself)
+//   * drag-drop mode is `workflow` — loading N workflows would just
+//     overwrite each other; deferring to the stock path preserves the
+//     "first file wins" workflow-load semantics
+async function _onCanvasDropCapture(event) {
+  const dt = event.dataTransfer;
+  if (!dt || !dt.files || dt.files.length < 2) return;
+  const files = Array.from(dt.files);
+  if (!files.every((f) => dropKindFor(f))) return;
+  if (dragDropMode() === DROP_MODE_WORKFLOW) return;
+
+  event.preventDefault();
+  event.stopImmediatePropagation();
+
+  const basePos = eventToCanvasPos(app.canvas, event);
+  console.info(
+    `[AM VFX Tools] multi-drop intercept: ${files.length} media files at ` +
+    `${basePos ? `[${basePos[0].toFixed(0)},${basePos[1].toFixed(0)}]` : "unknown"}`
+  );
+
+  for (let i = 0; i < files.length; i++) {
+    if (basePos) {
+      app.canvas.last_drop_position = [
+        basePos[0] + i * MULTI_DROP_OFFSET_X,
+        basePos[1] + i * MULTI_DROP_OFFSET_Y,
+      ];
+    }
+    try {
+      await amHandleFile.call(app, files[i], "file_drop");
+    } catch (e) {
+      console.error("[AM VFX Tools] multi-drop: failed for", files[i]?.name, e);
+    }
+  }
+}
+
+let _multiDropInstalled = false;
+function installMultiDropHandler() {
+  if (_multiDropInstalled) return;
+  const canvasEl = app?.canvas?.canvas;
+  if (!canvasEl) {
+    setTimeout(installMultiDropHandler, 50);
+    return;
+  }
+  // Capture phase + non-passive so preventDefault works and we run
+  // before ComfyUI's bubble-phase drop listener.
+  canvasEl.addEventListener("drop", _onCanvasDropCapture, true);
+  _multiDropInstalled = true;
+  console.info("[am-vfx-tools] multi-file drop handler installed");
 }
 
 function findWidget(node, name) {
@@ -839,6 +977,7 @@ app.registerExtension({
     // `setup()` (called after the frontend boots) avoids the race where
     // `app.handleFile` isn't yet defined when the extension loads.
     installDropHandler();
+    installMultiDropHandler();
   },
   // Fires once per fresh node creation (menu drop / drag-drop / template
   // instantiation). NOT called for saved-graph loads — those go through

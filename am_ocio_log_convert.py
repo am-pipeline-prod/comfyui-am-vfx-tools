@@ -8,15 +8,17 @@ config's standard roles:
 
 Default direction is lin → log (``reverse=False``); ``reverse=True``
 gives log → lin. The actual encoding follows whatever the active OCIO
-config binds those roles to, so behavior is config-driven (same code
+config binds those roles to, so behaviour is config-driven (same code
 works across Studio, CG, and any custom config that defines the
 standard roles).
 
-Code-import baseline: same OCIO processor pattern as
-:class:`AMOCIOColorspace`, but with fixed role-based src/dst instead of
-a user-pickable colorspace dropdown — see the family-sync rule in
-``docs/media-io-sync-rule.md`` for why this node is exempt from the
-dropdown / raw_data / default-picker invariants.
+Also accepts an optional ``video`` input — when wired, returns a lazy
+:class:`._core.video_lazy.OCIOTransformVideo` wrapper that applies the
+lin↔log transform per-frame on consumption. See
+docs/media-io-sync-rule.md invariant 28.
+
+Same OCIO processor pattern as :class:`AMOCIOColorspace` but with
+fixed role-based src/dst instead of a user-pickable dropdown.
 """
 from __future__ import annotations
 
@@ -27,6 +29,17 @@ import numpy as np
 import torch
 
 from ._core import color
+from ._core import video_lazy
+
+# Native ComfyUI VIDEO type — see docs/media-io-sync-rule.md invariant 28.
+try:
+    from comfy_api.v0_0_2 import InputImpl as _ComfyInputImpl  # type: ignore[import-not-found]
+    from comfy_api.v0_0_2 import Types as _ComfyTypes  # type: ignore[import-not-found]
+    _VIDEO_TYPE_AVAILABLE = True
+except ImportError:
+    _ComfyInputImpl = None  # type: ignore[assignment]
+    _ComfyTypes = None  # type: ignore[assignment]
+    _VIDEO_TYPE_AVAILABLE = False
 
 log = logging.getLogger("am_vfx_tools.media-io.ocio-log-convert")
 
@@ -80,14 +93,27 @@ class AMOCIOLogConvert:
                         "(Cineon-like)."
                     ),
                 }),
+                "video": ("VIDEO", {
+                    "tooltip": (
+                        "Optional VIDEO input. When wired, returns a lazy "
+                        "`OCIOTransformVideo` wrapper applying the lin↔log "
+                        "transform per-frame on consumption — no IMAGE "
+                        "materialisation here. Alpha (when present) passes "
+                        "through untouched. `image` is ignored when "
+                        "`video` is wired. See invariant 28."
+                    ),
+                }),
             },
         }
 
-    RETURN_TYPES = ("IMAGE",)
-    RETURN_NAMES = ("image",)
+    RETURN_TYPES = ("IMAGE", "VIDEO")
+    RETURN_NAMES = ("image", "video")
     OUTPUT_TOOLTIPS = (
         "Log/Lin-converted IMAGE — same primaries as the input, different encoding "
         "curve (linear ↔ Cineon-like log per the active OCIO config).",
+        "Lazy VIDEO output — emits an `OCIOTransformVideo` wrapper when "
+        "`video` is wired, else a zero-copy `VideoFromComponents` around "
+        "the IMAGE batch. None when no input is wired.",
     )
     FUNCTION = "execute"
     CATEGORY = "AM VFX Tools/Color"
@@ -96,20 +122,32 @@ class AMOCIOLogConvert:
         self,
         reverse: bool,
         image: Optional[torch.Tensor] = None,
+        video=None,
     ):
-        if image is None:
-            log.warning("[am-vfx-tools/ocio-logconv] `image` input is not wired — passing through")
-            return (torch.zeros((1, 64, 64, 3), dtype=torch.float32),)
-
         src = _LOG_ROLE if reverse else _LINEAR_ROLE
         dst = _LINEAR_ROLE if reverse else _LOG_ROLE
+
+        # VIDEO branch — return a lazy OCIOTransformVideo wrapper.
+        if video is not None:
+            if image is not None:
+                log.warning(
+                    "[am_vfx_tools/ocio-logconv] both VIDEO and IMAGE inputs "
+                    "wired — VIDEO wins; IMAGE ignored"
+                )
+            wrapped = video_lazy.OCIOTransformVideo(video, src=src, dst=dst)
+            placeholder = torch.zeros((1, 64, 64, 3), dtype=torch.float32)
+            return (placeholder, wrapped)
+
+        if image is None:
+            log.warning("[am_vfx_tools/ocio-logconv] no input wired — passing through")
+            return (torch.zeros((1, 64, 64, 3), dtype=torch.float32), None)
 
         out_image = image
         try:
             proc = color.ColorProcessor(src, dst)
         except Exception as e:
             log.warning(
-                "[am-vfx-tools/ocio-logconv] cannot build %s -> %s (%s); "
+                "[am_vfx_tools/ocio-logconv] cannot build %s -> %s (%s); "
                 "pixels unchanged",
                 src, dst, e,
             )
@@ -125,13 +163,29 @@ class AMOCIOLogConvert:
                     proc.apply_inplace(out_np[i])
                 except Exception as e:
                     log.warning(
-                        "[am-vfx-tools/ocio-logconv] OCIO apply failed on frame %d "
+                        "[am_vfx_tools/ocio-logconv] OCIO apply failed on frame %d "
                         "(%s); leaving frame untransformed",
                         i, e,
                     )
             out_image = torch.from_numpy(out_np).to(image.device)
 
-        return (out_image,)
+        return (out_image, _build_video_socket(out_image))
+
+
+def _build_video_socket(images):
+    """Zero-copy VideoFromComponents wrapper for the VIDEO output socket."""
+    if not _VIDEO_TYPE_AVAILABLE or images is None:
+        return None
+    try:
+        from fractions import Fraction as _Fraction
+        return _ComfyInputImpl.VideoFromComponents(
+            _ComfyTypes.VideoComponents(
+                images=images, frame_rate=_Fraction(25, 1),
+            ),
+        )
+    except Exception as e:  # noqa: BLE001
+        log.warning("[am_vfx_tools/ocio-logconv] VIDEO socket build failed (%s); None", e)
+        return None
 
 
 __all__ = ["AMOCIOLogConvert"]

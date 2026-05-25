@@ -1,4 +1,4 @@
-"""am-pipe-media-io._core.color — OCIO 2.x ColorProcessor + family-grouped dropdown.
+"""am-vfx-tools-media-io._core.color — OCIO 2.x ColorProcessor + family-grouped dropdown.
 
 Single shared color core for AM Image / AM Video Read & Write nodes and the
 AM OCIO Colorspace utility node.
@@ -81,7 +81,7 @@ def _try_builtin(name: str):
     try:
         return _ocio.Config.CreateFromBuiltinConfig(name)
     except Exception as e:
-        log.info("[am-vfx-tools/color] builtin %s not available: %s", name, e)
+        log.info("[am_vfx_tools/color] builtin %s not available: %s", name, e)
         return None
 
 
@@ -105,13 +105,13 @@ def _load_config():
             _CONFIG = cfg
             _CONFIG_SOURCE = ocio_env
             log.info(
-                "[am-vfx-tools/color] loaded $OCIO=%s (%d colorspaces)",
+                "[am_vfx_tools/color] loaded $OCIO=%s (%d colorspaces)",
                 ocio_env, len(list(cfg.getColorSpaces())),
             )
             return _CONFIG
         except Exception as e:
             log.warning(
-                "[am-vfx-tools/color] $OCIO=%s failed to load (%s); falling back",
+                "[am_vfx_tools/color] $OCIO=%s failed to load (%s); falling back",
                 ocio_env, e,
             )
 
@@ -121,7 +121,7 @@ def _load_config():
         _CONFIG = cfg
         _CONFIG_SOURCE = f"(builtin: {_BUILTIN_STUDIO})"
         log.info(
-            "[am-vfx-tools/color] loaded builtin %s (%d colorspaces)",
+            "[am_vfx_tools/color] loaded builtin %s (%d colorspaces)",
             _BUILTIN_STUDIO, len(list(cfg.getColorSpaces())),
         )
         return _CONFIG
@@ -132,7 +132,7 @@ def _load_config():
         _CONFIG = cfg
         _CONFIG_SOURCE = f"(builtin: {_BUILTIN_CG})"
         log.info(
-            "[am-vfx-tools/color] loaded builtin %s (%d colorspaces)",
+            "[am_vfx_tools/color] loaded builtin %s (%d colorspaces)",
             _BUILTIN_CG, len(list(cfg.getColorSpaces())),
         )
         return _CONFIG
@@ -143,7 +143,7 @@ def _load_config():
         _CONFIG = cfg
         _CONFIG_SOURCE = "(raw stub)"
         log.warning(
-            "[am-vfx-tools/color] no usable OCIO config found — falling back to "
+            "[am_vfx_tools/color] no usable OCIO config found — falling back to "
             "raw stub (identity transforms only)"
         )
         return _CONFIG

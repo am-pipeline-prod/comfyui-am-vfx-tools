@@ -1,13 +1,19 @@
 """AM Reformat — ComfyUI node.
 
 Standalone Nuke-flavored reformat / dtype-cast utility. Identical
-widget block + identical defaults to the reformat section embedded in
-AM Read Image / AM Read Video / AM Write Image / AM Write Video — drop
-this node anywhere in a graph to apply the same transform on a wired
-IMAGE without touching a Read/Write node's settings.
+widget block + defaults to the reformat section embedded in AM
+Read/Write nodes — drop this node anywhere in a graph to apply the
+same transform on a wired IMAGE or VIDEO without touching another
+node's settings.
 
 Pure geometry + dtype: no OCIO, no path resolution, no batch/seed.
 The shared implementation lives in :mod:`._core.reformat`.
+
+VIDEO input — see docs/media-io-sync-rule.md invariant 28. When the
+`video` socket is wired, this node emits a :class:`._core.video_lazy.ReformatVideo`
+wrapper that defers the actual resize until a downstream consumer
+iterates frames. Multiple AM transforms can chain via VIDEO without
+each materialising the IMAGE batch.
 """
 from __future__ import annotations
 
@@ -18,6 +24,15 @@ import numpy as np
 import torch
 
 from ._core import preview, reformat
+from ._core import video_lazy
+
+# Native ComfyUI VIDEO type — see docs/media-io-sync-rule.md invariant 28.
+try:
+    from comfy_api.v0_0_2 import InputImpl as _ComfyInputImpl  # type: ignore[import-not-found]
+    _VIDEO_TYPE_AVAILABLE = True
+except ImportError:
+    _ComfyInputImpl = None  # type: ignore[assignment]
+    _VIDEO_TYPE_AVAILABLE = False
 
 log = logging.getLogger("am_vfx_tools.media-io.reformat-node")
 
@@ -29,9 +44,6 @@ class AMReformat:
     def INPUT_TYPES(cls):
         return {
             "required": {
-                "image": ("IMAGE", {
-                    "tooltip": "Image batch to reformat (N×H×W×C float).",
-                }),
                 "reformat_mode": (reformat.REFORMAT_MODES, {
                     "default": reformat.MODE_OFF,
                     "tooltip": reformat.TOOLTIP_MODE,
@@ -70,20 +82,38 @@ class AMReformat:
                 }),
             },
             "optional": {
+                "image": ("IMAGE", {
+                    "tooltip": "Image batch to reformat (N×H×W×C float).",
+                }),
                 "mask": ("MASK", {
                     "tooltip": reformat.TOOLTIP_MASK_IN_REFORMAT,
+                }),
+                # VIDEO input — invariant 28. Appended after image/mask.
+                "video": ("VIDEO", {
+                    "tooltip": (
+                        "Optional VIDEO input. When wired, returns a lazy "
+                        "`ReformatVideo` wrapper applying the resize "
+                        "per-frame on consumption — no IMAGE materialisation "
+                        "here. Alpha (when present) is resized alongside "
+                        "the image. `image` and `mask` are ignored when "
+                        "`video` is wired. See invariant 28."
+                    ),
                 }),
             },
         }
 
-    RETURN_TYPES = ("IMAGE", "MASK", "INT", "INT", "STRING")
-    RETURN_NAMES = ("image", "mask", "width", "height", "info")
+    # Output order — `video` appended (invariant 28).
+    RETURN_TYPES = ("IMAGE", "MASK", "INT", "INT", "STRING", "VIDEO")
+    RETURN_NAMES = ("image", "mask", "width", "height", "info", "video")
     OUTPUT_TOOLTIPS = (
         "Reformatted image batch (N×H×W×3, dtype per `output_dtype`).",
         reformat.TOOLTIP_MASK_OUT_REFORMAT,
         "Output width in pixels (post-reformat).",
         "Output height in pixels (post-reformat).",
         "One-line summary of the reformat applied.",
+        "Lazy VIDEO output — emits a `ReformatVideo` wrapper when `video` "
+        "is wired, else a zero-copy `VideoFromComponents` around the IMAGE "
+        "batch. None when no input is wired.",
     )
     FUNCTION = "execute"
     CATEGORY = "AM VFX Tools"
@@ -91,7 +121,6 @@ class AMReformat:
 
     def execute(
         self,
-        image,
         reformat_mode: str,
         scale: float,
         preset: str,
@@ -101,15 +130,34 @@ class AMReformat:
         filter: str,
         output_dtype: str,
         show_preview: bool = True,
+        image=None,
         mask=None,
+        video=None,
     ):
+        # VIDEO branch — wrap the source in a lazy ReformatVideo and emit.
+        # IMAGE/MASK outputs are placeholders since no materialisation
+        # happens here. See docs/media-io-sync-rule.md invariant 28.
+        if video is not None:
+            if image is not None or mask is not None:
+                log.warning(
+                    "[am_vfx_tools/reformat] both VIDEO and IMAGE/MASK inputs "
+                    "wired — VIDEO wins; IMAGE/MASK ignored"
+                )
+            return self._execute_video_branch(
+                video=video,
+                reformat_mode=reformat_mode, scale=scale, preset=preset,
+                target_width=target_width, target_height=target_height,
+                resize_type=resize_type, filter_name=filter,
+                show_preview=show_preview,
+            )
+
         if image is None:
             empty = torch.zeros((1, 64, 64, 3), dtype=torch.float32)
             # Empty MASK = zeros (stock ComfyUI: nothing to inpaint).
             empty_mask = torch.zeros((1, 64, 64), dtype=torch.float32)
             return {
-                "ui": {"text": ["(no image)"]},
-                "result": (empty, empty_mask, 64, 64, "(no image)"),
+                "ui": {"text": ["(no input)"]},
+                "result": (empty, empty_mask, 64, 64, "(no input)", None),
             }
 
         # Pull to numpy fp32 for the cv2-backed helper. Tensor → contiguous
@@ -132,7 +180,7 @@ class AMReformat:
                 mask_arr = mask.detach().cpu().numpy().astype(np.float32, copy=False)
                 arr = reformat.combine_image_mask(arr, mask_arr)
             except Exception as e:
-                log.warning("[am-vfx-tools/reformat] mask combine failed: %s; ignoring mask", e)
+                log.warning("[am_vfx_tools/reformat] mask combine failed: %s; ignoring mask", e)
 
         try:
             out_arr = reformat.reformat_array(
@@ -147,7 +195,7 @@ class AMReformat:
                 output_dtype=output_dtype,
             )
         except Exception as e:
-            log.warning("[am-vfx-tools/reformat] reformat failed: %s; passing input through", e)
+            log.warning("[am_vfx_tools/reformat] reformat failed: %s; passing input through", e)
             out_arr = arr
 
         # Split post-reformat into IMAGE (RGB) + MASK (1 - alpha) for the
@@ -173,10 +221,87 @@ class AMReformat:
             info_str = f"{out_w}x{out_h} (no-op)"
 
         ui = self._ui_payload(out_tensor, show_preview, info_str)
+        # VIDEO output — wrap the reformatted IMAGE batch in a
+        # VideoFromComponents (zero-copy convenience socket so downstream
+        # nodes can take VIDEO without an intermediate Create Video).
+        video_socket = self._build_video_socket(out_tensor)
         return {
             "ui": ui,
-            "result": (out_tensor, mask_tensor, int(out_w), int(out_h), info_str),
+            "result": (
+                out_tensor, mask_tensor, int(out_w), int(out_h),
+                info_str, video_socket,
+            ),
         }
+
+    # ------------------------------------------------------------------ #
+    #  VIDEO branch — wrap the source in a lazy ReformatVideo.
+    # ------------------------------------------------------------------ #
+
+    def _execute_video_branch(
+        self, *, video, reformat_mode, scale, preset, target_width,
+        target_height, resize_type, filter_name, show_preview,
+    ):
+        wrapped = video_lazy.ReformatVideo(
+            video,
+            mode=reformat_mode,
+            scale=float(scale),
+            preset=preset,
+            target_w=int(target_width),
+            target_h=int(target_height),
+            resize_type=resize_type,
+            filter_name=filter_name,
+        )
+        # Compute output dimensions from the source via the lazy wrapper
+        # for the metadata sockets (cheap — just inspects source headers).
+        try:
+            out_w, out_h = wrapped.get_dimensions()
+        except Exception as e:  # noqa: BLE001
+            log.warning(
+                "[am_vfx_tools/reformat] VIDEO dimension probe failed (%s)", e,
+            )
+            out_w, out_h = 0, 0
+        info_str = (
+            f"{int(out_w)}x{int(out_h)} VIDEO-lazy "
+            f"({reformat_mode}/{resize_type}/{filter_name})"
+        )
+        # Placeholder IMAGE/MASK — the artist wired VIDEO so no
+        # materialisation here. Downstream AM consumer iterates the
+        # lazy wrapper to actually run the resize.
+        placeholder = torch.zeros((1, 64, 64, 3), dtype=torch.float32)
+        empty_mask = torch.zeros((1, 64, 64), dtype=torch.float32)
+        return {
+            "ui": {"text": [info_str]},
+            "result": (
+                placeholder, empty_mask, int(out_w), int(out_h),
+                info_str, wrapped,
+            ),
+        }
+
+    @staticmethod
+    def _build_video_socket(images):
+        """Wrap the reformatted IMAGE batch in a VideoFromComponents.
+
+        Zero-copy convenience socket — same as AM Read Image's pattern.
+        Returns None when comfy_api is unavailable or images is empty.
+        """
+        if not _VIDEO_TYPE_AVAILABLE or images is None:
+            return None
+        try:
+            from fractions import Fraction as _Fraction
+            from comfy_api.v0_0_2 import Types as _ComfyTypes  # local import
+            # No fps context here — use 25 as a sane default; the node
+            # is geometry-only so downstream consumers should override
+            # if they care about timing.
+            return _ComfyInputImpl.VideoFromComponents(
+                _ComfyTypes.VideoComponents(
+                    images=images, frame_rate=_Fraction(25, 1),
+                ),
+            )
+        except Exception as e:  # noqa: BLE001
+            log.warning(
+                "[am_vfx_tools/reformat] VIDEO socket build failed (%s); None", e,
+            )
+            return None
 
     @staticmethod
     def _ui_payload(tensor, show_preview: bool, info_str: str):
@@ -194,7 +319,7 @@ class AMReformat:
                 filename_hint="reformat",
             )
         except Exception as e:
-            log.warning("[am-vfx-tools/reformat] preview generation failed: %s", e)
+            log.warning("[am_vfx_tools/reformat] preview generation failed: %s", e)
             return {"text": [info_str]}
         if not payload.get("images"):
             return {"text": [info_str]}

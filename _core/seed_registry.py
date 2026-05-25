@@ -1,4 +1,4 @@
-"""AM Pipe — process-global seed registry.
+"""AM VFX Tools — process-global seed registry.
 
 The AM Seed node publishes its resolved seed here at **IS_CHANGED**
 time (which ComfyUI calls for every node before any node executes —

@@ -70,6 +70,17 @@ try:
 except Exception:  # pragma: no cover
     _comfy_args = None
 
+# Native ComfyUI VIDEO type — see the media-io VIDEO-socket policy.
+# Defensive import so older ComfyUI without `comfy_api` still loads.
+try:
+    from comfy_api.v0_0_2 import InputImpl as _ComfyInputImpl  # type: ignore[import-not-found]
+    from comfy_api.v0_0_2 import Types as _ComfyTypes  # type: ignore[import-not-found]
+    _VIDEO_TYPE_AVAILABLE = True
+except ImportError:
+    _ComfyInputImpl = None  # type: ignore[assignment]
+    _ComfyTypes = None  # type: ignore[assignment]
+    _VIDEO_TYPE_AVAILABLE = False
+
 log = logging.getLogger("am_vfx_tools.write_video")
 
 
@@ -453,6 +464,20 @@ class AMVideoWrite:
                     "tooltip": "Audio track to mux into the container. Optional.",
                     "lazy": True,
                 }),
+                # VIDEO input — non-lazy so check_lazy_status can see whether
+                # it's wired and skip image/mask/audio.
+                "video": ("VIDEO", {
+                    "tooltip": (
+                        "Optional VIDEO input. When wired, calls "
+                        "`video.save_to(path)` — packet-copy when source "
+                        "codec matches dest (no decode), PyAV transcode "
+                        "otherwise. Either way no IMAGE batch is "
+                        "materialised. Upstream image/mask/audio are "
+                        "lazy-skipped. OCIO/Reformat don't apply — the "
+                        "video is written as-is. `VideoFromComponents` "
+                        "sources only support MP4+H264 output."
+                    ),
+                }),
             },
         }
 
@@ -460,13 +485,17 @@ class AMVideoWrite:
     # (see media-io-sync-rule.md invariant 14a). Tail matches the Read
     # nodes: `resolved_path, info, width, height, frame_rate, frame_count`.
     # The legacy socket name `fps` was renamed to `frame_rate` 2026-04-29
-    # for cross-node consistency.
+    # for cross-node consistency. `video` appended as a passthrough socket:
+    # emits the VIDEO that was written, available downstream without
+    # re-reading from disk.
     RETURN_TYPES = (
         "IMAGE", "MASK", "STRING", "STRING", "INT", "INT", "FLOAT", "INT",
+        "VIDEO",
     )
     RETURN_NAMES = (
         "image", "mask", "resolved_path", "info",
         "width", "height", "frame_rate", "frame_count",
+        "video",
     )
     OUTPUT_TOOLTIPS = (
         "Sliced IMAGE passthrough — the input image post-frame-slice / "
@@ -480,6 +509,11 @@ class AMVideoWrite:
         "Encoded frame height in pixels.",
         "Container's encoded frame rate (the value used by the encoder).",
         "Number of frames encoded into the container.",
+        "VIDEO passthrough — the same VIDEO that was written, available "
+        "downstream without re-reading from disk. When the IMAGE branch "
+        "fired, emits a `VideoFromComponents` wrapping the IMAGE batch + "
+        "frame_rate. When the VIDEO branch fired, emits the input VIDEO "
+        "as-is. None on no-op.",
     )
     FUNCTION = "execute"
     CATEGORY = "AM VFX Tools"
@@ -508,12 +542,17 @@ class AMVideoWrite:
         """ComfyUI lazy-input gate. Returns the list of lazy inputs that
         need upstream evaluation before execute().
 
-        When `load_saved_from_disk=True`, returns `[]` so upstream
-        encoders / samplers / OCIO chains feeding `image`/`mask`/`audio`
-        are skipped entirely — read-only mode sources from disk.
+        Two short-circuit cases return `[]` (skip all lazy upstream):
+        - `load_saved_from_disk=True`: read-only mode sources from disk.
+        - `video` wired (non-None): VIDEO branch handles the encode via
+          `save_to()` — no IMAGE-batch needed. `video` is non-lazy so
+          this kwarg is already populated by the time check_lazy_status
+          runs (see INPUT_TYPES note on the `video` slot).
         Otherwise requests whichever of image/mask/audio is wired.
         """
         if kwargs.get("load_saved_from_disk"):
+            return []
+        if kwargs.get("video") is not None:
             return []
         needed = []
         if kwargs.get("image") is None:
@@ -549,14 +588,18 @@ class AMVideoWrite:
         image=None,
         mask=None,
         audio: Optional[Dict[str, Any]] = None,
+        # VIDEO input — non-lazy, see check_lazy_status() and the INPUT_TYPES
+        # tooltip. When wired, `_execute_video_passthrough` handles the
+        # encode and the IMAGE-batch branch below is bypassed entirely.
+        video=None,
         prompt: Optional[Dict[str, Any]] = None,
     ):
         log.info(
             "[am_vfx_tools/write_video] execute() entered — "
             "ext=%s frame_mode=%s use_batch=%s load_saved_from_disk=%s "
-            "image_wired=%s",
+            "image_wired=%s video_wired=%s",
             ext, frame_mode, use_batch,
-            load_saved_from_disk, image is not None,
+            load_saved_from_disk, image is not None, video is not None,
         )
 
         # Read-only branch — when On, decode the existing container
@@ -572,9 +615,23 @@ class AMVideoWrite:
                 output_dtype=output_dtype, show_preview=show_preview,
             )
 
+        # VIDEO passthrough branch — when a native VIDEO is wired, bypass
+        # the IMAGE-batch encoder entirely and call `video.save_to()`.
+        # `check_lazy_status` already short-circuited the image/mask/
+        # audio upstream evaluation, so those are None here by design.
+        if video is not None:
+            return self._execute_video_passthrough(
+                video=video,
+                file_path=file_path, use_batch=use_batch,
+                embed_workflow=embed_workflow,
+                show_preview=show_preview,
+                seed=seed, prompt=prompt,
+            )
+
         if image is None:
             log.warning(
-                "[am_vfx_tools/write_video] `image` input is not wired — write skipped"
+                "[am_vfx_tools/write_video] neither `image` nor `video` input "
+                "is wired — write skipped"
             )
             return self._noop(None)
 
@@ -868,14 +925,45 @@ class AMVideoWrite:
         if rf_frag:
             info_str = f"{info_str} | {rf_frag}"
 
+        # VIDEO passthrough output — wrap the encoded result in a
+        # VideoFromComponents so downstream nodes can consume the
+        # just-written video without re-reading from disk.
+        video_passthrough = self._build_video_passthrough(
+            out_image, float(frame_rate),
+        )
+
         return {
             "ui": ui_payload,
             "result": (
-                # image, mask, resolved_path, info, width, height, frame_rate, frame_count
+                # image, mask, resolved_path, info, width, height,
+                # frame_rate, frame_count, video
                 out_image, out_mask, full_path, info_str,
                 int(out_w), int(out_h), float(frame_rate), int(n_frames),
+                video_passthrough,
             ),
         }
+
+    @staticmethod
+    def _build_video_passthrough(images, fps: float):
+        """Wrap the encoded IMAGE batch as a VIDEO passthrough output.
+
+        Mirrors AM Read Image's `_make_video_socket` — zero-copy
+        VideoFromComponents reference. Returns None when comfy_api is
+        unavailable.
+        """
+        if not _VIDEO_TYPE_AVAILABLE or images is None:
+            return None
+        try:
+            from fractions import Fraction as _Fraction
+            rate = _Fraction(fps if fps > 0 else 1).limit_denominator(1_000_000)
+            return _ComfyInputImpl.VideoFromComponents(
+                _ComfyTypes.VideoComponents(images=images, frame_rate=rate),
+            )
+        except Exception as e:  # noqa: BLE001
+            log.warning(
+                "[am_vfx_tools/write_video] VIDEO passthrough build failed (%s); None", e,
+            )
+            return None
 
     @staticmethod
     def _build_workflow_metadata(
@@ -967,10 +1055,11 @@ class AMVideoWrite:
 
     @staticmethod
     def _noop(image=None):
-        # Match the 8-output RETURN_TYPES shape so ComfyUI doesn't slot a
+        # Match the 9-output RETURN_TYPES shape so ComfyUI doesn't slot a
         # bare string into the IMAGE socket. Order mirrors AM Image
         # Write._noop and the live `result` tuple above:
-        # image, mask, resolved_path, info, width, height, frame_rate, frame_count.
+        # image, mask, resolved_path, info, width, height, frame_rate,
+        # frame_count, video.
         if image is None or not hasattr(image, "shape") or image.ndim < 3:
             # Provide a real placeholder IMAGE so downstream consumers (e.g.
             # stock SaveImage / SaveVideo, which slice `images[0].shape[1]`)
@@ -980,7 +1069,10 @@ class AMVideoWrite:
             empty_mask = torch.zeros((1, 64, 64), dtype=torch.float32)
             return {
                 "ui": {"text": ["(no write)"]},
-                "result": (placeholder, empty_mask, "", "(no write)", 64, 64, 0.0, 0),
+                "result": (
+                    placeholder, empty_mask, "", "(no write)",
+                    64, 64, 0.0, 0, None,
+                ),
             }
         # image is a tensor (already promoted to (N, H, W, C) by the caller).
         h = int(image.shape[1] if image.ndim == 4 else image.shape[0])
@@ -990,7 +1082,138 @@ class AMVideoWrite:
         empty_mask = torch.zeros((n, h, w), dtype=torch.float32)
         return {
             "ui": {"text": ["(no write)"]},
-            "result": (image, empty_mask, "", "(no write)", w, h, 0.0, 0),
+            "result": (image, empty_mask, "", "(no write)", w, h, 0.0, 0, None),
+        }
+
+    # ------------------------------------------------------------------
+    # VIDEO passthrough mode (video input wired)
+    # ------------------------------------------------------------------
+    #
+    # When the `video` socket is wired, bypass the IMAGE encode and call
+    # `video.save_to()`. For `VideoFromFile` at AUTO/AUTO this is a
+    # packet-level demux+remux (no decode); for `VideoFromComponents` it's
+    # a normal H264/MP4 encode (the native type's only output today).
+    # OCIO/Reformat are NOT applied. IMAGE/MASK outputs are 1-frame
+    # placeholders; metadata sockets are probed cheaply from the source.
+
+    def _execute_video_passthrough(
+        self, *, video, file_path, use_batch, embed_workflow,
+        show_preview, seed, prompt,
+    ):
+        if not _VIDEO_TYPE_AVAILABLE:
+            log.warning(
+                "[am_vfx_tools/write_video] VIDEO passthrough requested but "
+                "comfy_api.v0_0_2 is not importable — falling back to "
+                "no-op. Pin ComfyUI >= 0.3.48."
+            )
+            return self._noop(None)
+
+        # 1. Resolve output path. Mirrors the IMAGE branch's logic from
+        #    execute() (use_batch picks max+1 for write mode).
+        _batch_n: Optional[int] = None
+        if not file_path:
+            log.warning(
+                "[am_vfx_tools/write_video] VIDEO passthrough: empty file_path"
+            )
+            return self._noop(None)
+        base_path = os.path.expandvars(os.path.expanduser(file_path))
+        if use_batch:
+            _batch_n, full_path = batch_suffix.resolve_for_manual_path(base_path)
+        else:
+            full_path = base_path
+
+        # 2. Resolve seed via registry (matches the IMAGE branch).
+        if int(seed) == -1:
+            looked_up = seed_registry.find_seed_for_prompt(prompt)
+            if looked_up is not None:
+                seed = int(looked_up)
+
+        # 3. Build embed_workflow metadata (matches the IMAGE branch).
+        disable_metadata = bool(_comfy_args and getattr(_comfy_args, "disable_metadata", False))
+        meta_dict: Optional[Dict[str, Any]]
+        if embed_workflow and not disable_metadata:
+            meta_dict = self._build_workflow_metadata(
+                embed_workflow=True,
+                prompt=prompt,
+                seed=int(seed),
+                batch_no=_batch_n,
+            )
+        else:
+            meta_dict = None
+
+        # 4. Make parent dir (save_to → av.open doesn't mkdir).
+        try:
+            os.makedirs(os.path.dirname(full_path), exist_ok=True)
+        except OSError as e:
+            log.warning(
+                "[am_vfx_tools/write_video] VIDEO passthrough: mkdir failed for "
+                "%s: %s", full_path, e,
+            )
+            return self._noop(None)
+
+        # 5. The save_to() call — packet-copy on VideoFromFile (AUTO/AUTO),
+        #    normal encode on VideoFromComponents. Catch ValueError from
+        #    the VideoFromComponents MP4/H264-only constraint and log it;
+        #    we don't fall back to the IMAGE-batch encoder here because
+        #    that would defeat the lazy-skip we already triggered (artist
+        #    expectation: "I wired VIDEO → no IMAGE work"). The artist
+        #    can rewire to the IMAGE input if they hit the constraint.
+        try:
+            video.save_to(
+                full_path,
+                format=_ComfyTypes.VideoContainer.AUTO,
+                codec=_ComfyTypes.VideoCodec.AUTO,
+                metadata=meta_dict,
+            )
+        except ValueError as e:
+            log.warning(
+                "[am_vfx_tools/write_video] VIDEO passthrough: save_to raised "
+                "ValueError (%s). This is typically the VideoFromComponents "
+                "MP4/H264-only constraint. Rewire the IMAGE input instead, "
+                "or change `ext` to mp4.", e,
+            )
+            return self._noop(None)
+        except Exception as e:  # noqa: BLE001 — log + soft fail
+            log.exception(
+                "[am_vfx_tools/write_video] VIDEO passthrough: save_to failed "
+                "with %s", e,
+            )
+            return self._noop(None)
+
+        # 6. Probe metadata from the VideoInput for the output sockets.
+        #    VideoFromFile reads container headers (cheap); VideoFromComponents
+        #    inspects the in-memory tensor (also cheap).
+        try:
+            width, height = video.get_dimensions()
+            frame_count = int(video.get_frame_count())
+            frame_rate_val = float(video.get_frame_rate())
+        except Exception as e:  # noqa: BLE001
+            log.warning(
+                "[am_vfx_tools/write_video] VIDEO passthrough: metadata probe "
+                "failed (%s); using zeros for output sockets", e,
+            )
+            width, height, frame_count, frame_rate_val = 0, 0, 0, 0.0
+
+        info_str = (
+            f"{int(width)}x{int(height)} VIDEO-passthrough "
+            f"{frame_rate_val:.4g}fps, {frame_count} frames"
+        )
+
+        # 7. IMAGE/MASK output sockets — placeholders (wiring VIDEO opted
+        #    out of materialising IMAGE). VIDEO output socket emits the
+        #    input VIDEO as passthrough (artist can chain downstream).
+        placeholder = torch.zeros((1, 64, 64, 3), dtype=torch.float32)
+        empty_mask = torch.zeros((1, 64, 64), dtype=torch.float32)
+
+        return {
+            "ui": {"text": [full_path]},
+            "result": (
+                # image, mask, resolved_path, info, width, height,
+                # frame_rate, frame_count, video
+                placeholder, empty_mask, full_path, info_str,
+                int(width), int(height), float(frame_rate_val), int(frame_count),
+                video,  # passthrough — the input VIDEO
+            ),
         }
 
     # ------------------------------------------------------------------
@@ -1099,10 +1322,22 @@ class AMVideoWrite:
             f"{decoded_fps:.4g}fps, {n_frames} frames decoded from disk"
         )
         ui_payload = self._ui_payload(out_image, full_path, show_preview, working_colorspace)
+        # VIDEO output: emit a VideoFromFile referencing the on-disk path
+        # we just read from — the file exists, downstream can re-consume.
+        video_passthrough = None
+        if _VIDEO_TYPE_AVAILABLE and full_path and os.path.isfile(full_path):
+            try:
+                video_passthrough = _ComfyInputImpl.VideoFromFile(full_path)
+            except Exception as e:  # noqa: BLE001
+                log.warning(
+                    "[am_vfx_tools/write_video] read-only VIDEO passthrough "
+                    "build failed (%s); None", e,
+                )
         return {
             "ui": ui_payload,
             "result": (
                 out_image, out_mask, full_path, info_str,
                 int(out_w), int(out_h), decoded_fps, int(n_frames),
+                video_passthrough,
             ),
         }

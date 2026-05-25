@@ -31,6 +31,20 @@ import torch
 
 from ._core import color, image_backend, preview, reformat, sequence
 
+# Native ComfyUI VIDEO type — see docs/media-io-sync-rule.md invariant 28.
+# Defensive import so older ComfyUI without `comfy_api` still loads the
+# node; the VIDEO socket emits None on those installs.
+try:
+    from comfy_api.v0_0_2 import InputImpl as _ComfyInputImpl  # type: ignore[import-not-found]
+    from comfy_api.v0_0_2 import Types as _ComfyTypes  # type: ignore[import-not-found]
+    _VIDEO_TYPE_AVAILABLE = True
+except ImportError:
+    _ComfyInputImpl = None  # type: ignore[assignment]
+    _ComfyTypes = None  # type: ignore[assignment]
+    _VIDEO_TYPE_AVAILABLE = False
+
+from fractions import Fraction as _Fraction
+
 log = logging.getLogger("am_vfx_tools.read_image")
 
 
@@ -227,12 +241,15 @@ class AMImageRead:
     # `image[, audio]` prefix (Read Video splices `audio` after `image`)
     # then the same `resolved_path, info, width, height, frame_rate,
     # frame_count` tail.
+    # Output socket order — see media-io-sync-rule.md invariants 14a + 28.
     RETURN_TYPES = (
         "IMAGE", "MASK", "STRING", "STRING", "INT", "INT", "FLOAT", "INT",
+        "VIDEO",
     )
     RETURN_NAMES = (
         "image", "mask", "resolved_path", "info",
         "width", "height", "frame_rate", "frame_count",
+        "video",
     )
     OUTPUT_TOOLTIPS = (
         "Frame batch as IMAGE (N×H×W×3 float in [0,1]). RGB only — alpha is "
@@ -245,6 +262,11 @@ class AMImageRead:
         "Effective fps. From the `frame_rate` widget when set, else probed from "
         "EXR/OIIO metadata, else 25 fallback.",
         "Number of frames in the IMAGE batch.",
+        "Convenience VIDEO wrapper (`VideoFromComponents`) around the same "
+        "IMAGE batch + frame_rate. NO RAM benefit — frames are already "
+        "decoded. Equivalent to wiring `Create Video` downstream. Native "
+        "`SaveVideo` only accepts this as MP4+H264; use AM Write Video for "
+        "other codecs.",
     )
     FUNCTION = "execute"
     CATEGORY = "AM VFX Tools"
@@ -520,6 +542,15 @@ class AMImageRead:
         if rf_frag:
             info_str = f"{info_str} | {rf_frag}"
 
+        # VIDEO output — fold MASK into alpha (mask = 1 - alpha per stock
+        # ComfyUI convention) so downstream lazy transforms can carry the
+        # alpha plane natively via VideoComponents.alpha. Read image's
+        # mask is already in 1-alpha form; we invert it back to alpha here
+        # for the VIDEO encoding side.
+        video_socket = self._make_video_socket(
+            tensor, float(effective_fps), mask=mask_tensor,
+        )
+
         return {
             "ui": self._ui_payload(
                 tensor, last_resolved_path, show_preview,
@@ -529,6 +560,7 @@ class AMImageRead:
                 tensor, mask_tensor, last_resolved_path, info_str,
                 int(out_width), int(out_height),
                 float(effective_fps), int(frame_count),
+                video_socket,
             ),
         }
 
@@ -580,11 +612,47 @@ class AMImageRead:
         expanded = os.path.expandvars(os.path.expanduser(file_path))
 
         if single:
-            # Substitute the frame in the literal user path; respect any
-            # token (####, %0Nd) the artist already typed.
-            target_for_parse = sequence.expand_frame_pattern(
-                expanded, single_frame, _DEFAULT_FRAME_PADDING,
+            # Substitute the requested single_frame into the literal user
+            # path. THREE cases to handle:
+            #
+            # 1. Path has an explicit token (####, %0Nd): substitute
+            #    directly. `expand_frame_pattern` would handle this, but
+            #    `parse_frame_pattern` also normalises to printf form
+            #    first, so route through it for consistency.
+            # 2. Path is a literal concrete frame from a real sequence
+            #    (dot-separated, e.g. `plate.0995.exr`): the
+            #    trailing-digit detector in `parse_frame_pattern`
+            #    recognises `.0995.` as a frame token and returns the
+            #    printf form `plate.%04d.exr`. We then substitute the
+            #    requested `single_frame` into that printf form so the
+            #    read picks up the artist's chosen frame, NOT the one
+            #    they happened to point at. This was the bug in
+            #    pre-2026-05-11 builds — `expand_frame_pattern` alone is
+            #    a no-op on literal paths with no `####`/`%0Nd` token,
+            #    so the artist's `first_frame` widget value was silently
+            #    ignored and the literal frame number was used instead.
+            #    Symptom: sequence starts at 995, single mode with
+            #    `first_frame=1000` loaded 995. Range mode worked
+            #    because it took a different code path
+            #    (parse-then-iterate).
+            # 3. Path has neither token nor a dot-separated trailing
+            #    digit group: it's a single literal file (e.g.
+            #    `still.exr`, `output_b0001.exr` from AM Write batch
+            #    mode, `reference_2.jpg` from drag-drop collision
+            #    suffix, `photo42.png` from the web). The detector
+            #    deliberately ignores trailing digits unless preceded
+            #    by `.` — studio sequence convention is dot-separated
+            #    — so these read literally and don't snap to a
+            #    synthetic neighbour.
+            printf_form, frame_spec, pad = sequence.parse_frame_pattern(
+                expanded,
             )
+            if frame_spec is None or pad == 0:
+                target_for_parse = expanded
+            else:
+                target_for_parse = sequence.expand_frame_pattern(
+                    printf_form, single_frame, pad,
+                )
             # Already concrete. Padding is irrelevant; report 0 to signal
             # "no scan needed."
             return target_for_parse, [single_frame], None, None, 0
@@ -810,16 +878,61 @@ class AMImageRead:
         return payload
 
     def _empty_result(self, label: str):
+        empty_tensor = torch.zeros((1, 64, 64, 3), dtype=torch.float32)
         return {
             "ui": {"text": [label]},
             "result": (
-                # image, mask, resolved_path, info, width, height, frame_rate, frame_count
+                # image, mask, resolved_path, info, width, height,
+                # frame_rate, frame_count, video
                 # Empty MASK = zeros (stock ComfyUI convention: nothing to inpaint).
-                torch.zeros((1, 64, 64, 3), dtype=torch.float32),
+                # Empty VIDEO = a VideoFromComponents wrapping the 1-frame
+                # black tensor so downstream consumers don't NPE on None.
+                empty_tensor,
                 torch.zeros((1, 64, 64), dtype=torch.float32),
                 label, label, 64, 64, 0.0, 0,
+                self._make_video_socket(empty_tensor, 0.0),
             ),
         }
+
+    # ------------------------------------------------------------------ #
+    #  VIDEO socket helper — invariant 28.
+    # ------------------------------------------------------------------ #
+    @staticmethod
+    def _make_video_socket(
+        images: torch.Tensor,
+        fps: float,
+        *,
+        mask: Optional[torch.Tensor] = None,
+    ):
+        """Wrap the IMAGE batch in a `VideoFromComponents` (zero copy).
+
+        When *mask* is provided, encodes it as VideoComponents.alpha
+        (alpha = 1 - mask per stock-ComfyUI convention) so downstream
+        lazy transforms can carry the alpha plane natively. Returns
+        None when `comfy_api.v0_0_2` is unavailable.
+        """
+        if not _VIDEO_TYPE_AVAILABLE:
+            return None
+        try:
+            rate = _Fraction(fps if fps > 0 else 1).limit_denominator(1_000_000)
+            alpha = None
+            if mask is not None and hasattr(mask, "shape"):
+                # mask is (N, H, W); alpha is (N, H, W) in [0,1].
+                # `1 - mask` returns torch tensor of the same shape/dtype.
+                try:
+                    alpha = (1.0 - mask).clamp(0.0, 1.0)
+                except Exception:  # noqa: BLE001
+                    alpha = None
+            return _ComfyInputImpl.VideoFromComponents(
+                _ComfyTypes.VideoComponents(
+                    images=images, alpha=alpha, frame_rate=rate,
+                ),
+            )
+        except Exception as e:  # noqa: BLE001
+            log.warning(
+                "[am_vfx_tools/read-image] VIDEO socket build failed (%s); None", e,
+            )
+            return None
 
     @staticmethod
     def _build_info(

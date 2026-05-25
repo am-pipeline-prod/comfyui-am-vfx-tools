@@ -287,10 +287,11 @@ const _VERSION_RE = /(?<![A-Za-z0-9])([vV])(\d+)(?![A-Za-z0-9])/;
 
 /**
  * Persist a small workflow-origin metadata block into `app.graph.extra.am_vfx_tools`
- * so it round-trips through the workflow JSON. Public pack uses this purely
- * for the in-app version-tracking + last-saved-path memory; no Python nodes
- * read it back. Stays under a clearly-namespaced key so it doesn't collide
- * with any other custom-node pack's `extra` writes.
+ * so it round-trips through the workflow JSON. Used for in-app version-tracking
+ * + last-saved-path memory, and read back by the drag-drop route (`routes.py`
+ * tier-2) via the `.path` field to snap a dropped image to its on-disk source.
+ * Stays under a clearly-namespaced key so it doesn't collide with any other
+ * custom-node pack's `extra` writes.
  */
 async function stampGraphMetadata(absPath) {
   const g = app.graph;
