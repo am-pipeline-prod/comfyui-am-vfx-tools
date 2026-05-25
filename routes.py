@@ -53,7 +53,15 @@ from ._filechooser.server import register_filechooser_routes
 
 log = logging.getLogger("am_vfx_tools.routes")
 
-routes = PromptServer.instance.routes
+# Guard against import without a running server. The Comfy Registry's
+# node-extraction sandbox imports this pack with PromptServer.instance=None;
+# an unguarded `PromptServer.instance.routes` would raise AttributeError at
+# import time and abort __init__ before NODE_CLASS_MAPPINGS is defined,
+# making the Registry report "no nodes". Fall back to a throwaway
+# RouteTableDef so import always succeeds; at real runtime the instance
+# exists and routes register normally.
+_inst = getattr(PromptServer, "instance", None)
+routes = _inst.routes if _inst is not None else web.RouteTableDef()
 
 
 # ---------------------------------------------------------------------------

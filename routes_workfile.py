@@ -21,7 +21,10 @@ from . import config, native_dialog, recent, sandbox
 
 log = logging.getLogger("am_vfx_tools.workfile-io")
 
-routes = PromptServer.instance.routes
+# Guard against import without a running server (Registry node-extraction
+# sandbox has PromptServer.instance=None). See routes.py for rationale.
+_inst = getattr(PromptServer, "instance", None)
+routes = _inst.routes if _inst is not None else web.RouteTableDef()
 
 # Match a version token (case-insensitive) bordered by non-alphanumerics or
 # string boundaries. Captures only the digits, so we can preserve the literal

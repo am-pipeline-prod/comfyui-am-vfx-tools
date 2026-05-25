@@ -32,9 +32,16 @@ import os
 # ``PromptServer.instance.routes`` at import time. URL prefixes are
 # disjoint (`/am-vfx-tools/*` for media-IO + filechooser, plus
 # `/am-vfx-tools/workfile-io/*` for workfile-IO) so registration order
-# is irrelevant.
-from . import routes  # noqa: F401
-from . import routes_workfile  # noqa: F401
+# is irrelevant. Wrapped in try/except so a failure to register HTTP
+# routes can never prevent NODE_CLASS_MAPPINGS (defined below) from being
+# importable — e.g. in the Comfy Registry's node-extraction sandbox.
+try:
+    from . import routes  # noqa: F401
+    from . import routes_workfile  # noqa: F401
+except Exception as _route_err:  # noqa: BLE001
+    logging.getLogger("am_vfx_tools").warning(
+        "[am-vfx-tools] HTTP route registration skipped: %s", _route_err
+    )
 
 from .am_color_correct import AMColorCorrect
 from .am_frame_range import AMFrameRange
