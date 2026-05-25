@@ -523,6 +523,17 @@ class AMImageWrite:
                     ),
                 }),
             },
+            "hidden": {
+                # `prompt` feeds comfyui/prompt (the API graph); `extra_pnginfo`
+                # carries the editor `workflow` graph → comfyui/workflow, which
+                # is what drag-drop loadback rebuilds the canvas from. Declared
+                # hidden so ComfyUI supplies them at execute() time. (These were
+                # dropped when the public pack was stripped of Auto mode —
+                # without them the embed never runs and saved files carry no
+                # workflow metadata.)
+                "prompt": "PROMPT",
+                "extra_pnginfo": "EXTRA_PNGINFO",
+            },
         }
 
     # Output socket order — kept symmetric across the four media-IO nodes
@@ -667,6 +678,7 @@ class AMImageWrite:
         # below is bypassed entirely.
         video=None,
         prompt: Optional[Dict[str, Any]] = None,
+        extra_pnginfo: Optional[Dict[str, Any]] = None,
     ):
         log.info(
             "[am_vfx_tools/write_image] execute() entered — "
@@ -717,6 +729,7 @@ class AMImageWrite:
                 resize_type=resize_type, filter=filter,
                 output_dtype=output_dtype, show_preview=show_preview,
                 prompt=prompt,
+                extra_pnginfo=extra_pnginfo,
             )
 
         if image is None:
@@ -792,7 +805,7 @@ class AMImageWrite:
         # tags. Width/height are NOT emitted — already native to image
         # dimensions / video stream metadata, duplicating adds noise.
         workflow_meta = self._build_workflow_metadata(
-            embed_workflow, prompt,
+            embed_workflow, prompt, extra_pnginfo,
             seed=seed,
             batch_no=_batch_n,
         )
@@ -1071,6 +1084,7 @@ class AMImageWrite:
     def _build_workflow_metadata(
         embed_workflow: bool,
         prompt: Optional[Dict[str, Any]],
+        extra_pnginfo: Optional[Dict[str, Any]] = None,
         *,
         seed: int = -1,
         batch_no: Optional[int] = None,
@@ -1105,6 +1119,15 @@ class AMImageWrite:
                 out["comfyui/prompt"] = json.dumps(prompt)
             except Exception:
                 pass
+        # Editor graph(s) from EXTRA_PNGINFO — most importantly the
+        # `workflow` entry → comfyui/workflow, which is what drag-drop
+        # loadback reconstructs the canvas from.
+        if extra_pnginfo:
+            for key, value in extra_pnginfo.items():
+                try:
+                    out[f"comfyui/{key}"] = json.dumps(value)
+                except Exception:
+                    continue
 
         if int(seed) != -1:
             out["comfyui/seed"] = str(int(seed))
@@ -1136,6 +1159,7 @@ class AMImageWrite:
         reformat_mode, scale, preset, target_width, target_height,
         resize_type, filter, output_dtype, show_preview,
         prompt,
+        extra_pnginfo,
     ):
         if not _VIDEO_TYPE_AVAILABLE:
             log.warning(
@@ -1181,6 +1205,7 @@ class AMImageWrite:
             workflow_meta = self._build_workflow_metadata(
                 embed_workflow=True,
                 prompt=prompt,
+                extra_pnginfo=extra_pnginfo,
                 seed=int(seed),
                 batch_no=_batch_n,
             )

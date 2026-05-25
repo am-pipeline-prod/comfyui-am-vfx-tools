@@ -1,6 +1,6 @@
 [project]
 name = "comfyui-am-vfx-tools"
-version = "0.2.1"
+version = "0.2.2"
 description = "VFX I/O & color toolkit for ComfyUI: image + video read/write (OpenImageIO + PyAV), OCIO 2.x color management, Nuke-style Grade + Color Correct, OpenCV reformat, frame-order reverse, render-farm-safe Seed, and frame-range slicing. Native VIDEO sockets on every pixel node for low-RAM streaming. 13 nodes."
 requires-python = ">=3.10"
 license = { text = "MIT" }

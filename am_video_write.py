@@ -479,6 +479,15 @@ class AMVideoWrite:
                     ),
                 }),
             },
+            "hidden": {
+                # `prompt` feeds comfyui/prompt (API graph); `extra_pnginfo`
+                # carries the editor `workflow` graph → comfyui/workflow for
+                # drag-drop loadback. Declared hidden so ComfyUI supplies them
+                # at execute() time (dropped during the public Auto-mode strip;
+                # without them no workflow metadata was ever embedded).
+                "prompt": "PROMPT",
+                "extra_pnginfo": "EXTRA_PNGINFO",
+            },
         }
 
     # Output socket order — kept symmetric across the four media-IO nodes
@@ -593,6 +602,7 @@ class AMVideoWrite:
         # encode and the IMAGE-batch branch below is bypassed entirely.
         video=None,
         prompt: Optional[Dict[str, Any]] = None,
+        extra_pnginfo: Optional[Dict[str, Any]] = None,
     ):
         log.info(
             "[am_vfx_tools/write_video] execute() entered — "
@@ -626,6 +636,7 @@ class AMVideoWrite:
                 embed_workflow=embed_workflow,
                 show_preview=show_preview,
                 seed=seed, prompt=prompt,
+                extra_pnginfo=extra_pnginfo,
             )
 
         if image is None:
@@ -840,7 +851,7 @@ class AMVideoWrite:
         audio_buf = self._coerce_audio(audio) if audio is not None else None
 
         workflow_meta = self._build_workflow_metadata(
-            embed_workflow, prompt,
+            embed_workflow, prompt, extra_pnginfo,
             seed=seed,
             batch_no=_batch_n,
         )
@@ -969,6 +980,7 @@ class AMVideoWrite:
     def _build_workflow_metadata(
         embed_workflow: bool,
         prompt: Optional[Dict[str, Any]],
+        extra_pnginfo: Optional[Dict[str, Any]] = None,
         *,
         seed: int = -1,
         batch_no: Optional[int] = None,
@@ -993,6 +1005,14 @@ class AMVideoWrite:
                 out["comfyui/prompt"] = json.dumps(prompt)
             except Exception:
                 pass
+        # Editor graph(s) from EXTRA_PNGINFO — most importantly `workflow`
+        # → comfyui/workflow, which drag-drop loadback rebuilds from.
+        if extra_pnginfo:
+            for key, value in extra_pnginfo.items():
+                try:
+                    out[f"comfyui/{key}"] = json.dumps(value)
+                except Exception:
+                    continue
 
         if int(seed) != -1:
             out["comfyui/seed"] = str(int(seed))
@@ -1099,6 +1119,7 @@ class AMVideoWrite:
     def _execute_video_passthrough(
         self, *, video, file_path, use_batch, embed_workflow,
         show_preview, seed, prompt,
+        extra_pnginfo,
     ):
         if not _VIDEO_TYPE_AVAILABLE:
             log.warning(
@@ -1135,6 +1156,7 @@ class AMVideoWrite:
             meta_dict = self._build_workflow_metadata(
                 embed_workflow=True,
                 prompt=prompt,
+                extra_pnginfo=extra_pnginfo,
                 seed=int(seed),
                 batch_no=_batch_n,
             )
