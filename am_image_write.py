@@ -172,6 +172,59 @@ def _suffix_with_frame(path: str, frame: int, padding: int) -> str:
     return f"{base}.{int(frame):0{max(1, padding)}d}{ext}"
 
 
+def _frame_target(
+    full_path_template: str, out_frame_no: int, padding: int,
+    *, use_frame_numbers: bool, has_token: bool,
+) -> str:
+    """Resolve one frame's output path — shared by the IMAGE and VIDEO
+    branches so they stay symmetric.
+
+    Three-way decision (mirrors the IMAGE write loop):
+
+    * explicit ``####`` / ``%0Nd`` token in the path → substitute it.
+    * no token but ``use_frame_numbers`` is on → append ``.NNNNN`` before
+      the extension via :func:`_suffix_with_frame`.
+    * otherwise → write the path verbatim (frames collapse onto one path).
+    """
+    if has_token:
+        return sequence.expand_frame_pattern(full_path_template, out_frame_no, padding)
+    if use_frame_numbers:
+        return _suffix_with_frame(full_path_template, out_frame_no, padding)
+    return full_path_template
+
+
+def _video_frame_window(frame_mode: str, first_frame: int, last_frame: int):
+    """0-based inclusive ``(lo, hi)`` source-frame window for the VIDEO
+    streaming branch — the streaming analogue of the IMAGE branch's
+    :meth:`AMImageWrite._slice_indices`.
+
+    ``hi`` is ``None`` for an open-ended tail (stream to the last decoded
+    frame): the video is decoded lazily so the total frame count isn't
+    known up front, hence ``all`` and open ``range`` (``last_frame=-1``)
+    can't be turned into a concrete upper index.
+
+    * ``single`` → ``(first_frame-1, first_frame-1)`` — one frame.
+    * ``range``  → ``(first_frame-1, last_frame-1)``; ``last_frame<=0``
+      leaves ``hi=None`` (to end).
+    * ``all``    → ``(0, None)`` — every decoded frame.
+
+    1-based widget indices map to 0-based source indices (``-1``). The
+    OUTPUT frame number is computed by the caller as
+    ``start_frame + (i - lo)`` so the first written frame always lands on
+    ``start_frame`` regardless of where the window starts — matching the
+    IMAGE branch.
+    """
+    if frame_mode == FRAME_MODE_SINGLE:
+        lo = max(0, int(first_frame) - 1)
+        return lo, lo
+    if frame_mode == FRAME_MODE_RANGE:
+        lo = max(0, int(first_frame) - 1)
+        hi = (int(last_frame) - 1) if int(last_frame) > 0 else None
+        return lo, hi
+    # FRAME_MODE_ALL (and any unexpected value) → full stream.
+    return 0, None
+
+
 class AMImageWrite:
     """ComfyUI node — write IMAGE batch via OIIO + OCIO."""
 
@@ -719,6 +772,8 @@ class AMImageWrite:
                 seed=seed, use_batch=use_batch,
                 frame_rate=frame_rate,
                 use_frame_numbers=use_frame_numbers,
+                frame_mode=frame_mode, first_frame=first_frame,
+                last_frame=last_frame,
                 start_frame=start_frame, padding=padding,
                 bit_depth=bit_depth, compression=compression,
                 working_colorspace=working_colorspace,
@@ -1142,8 +1197,10 @@ class AMImageWrite:
     # frame to its target EXR. Peak RAM = one frame. Per-frame OCIO +
     # Reformat + dtype apply (same widgets as the IMAGE branch). MASK is
     # dropped (no MASK input in this branch). frame_mode/first_frame/
-    # last_frame are NOT consulted — every source frame is written
-    # starting at `start_frame`. Slice upstream if you need a subset.
+    # last_frame ARE honoured (via `_video_frame_window`): the decode loop
+    # skips source frames outside the window and the first written frame
+    # lands on `start_frame` — same semantic as the IMAGE branch, but
+    # streamed (open-ended `all` / `range -1` have no concrete upper index).
     #
     # Two source subtypes:
     #   * VideoFromFile: open via PyAV, iterate decoded frames.
@@ -1153,6 +1210,7 @@ class AMImageWrite:
     def _execute_video_streaming(
         self, *, video, file_path, ext,
         seed, use_batch, frame_rate, use_frame_numbers,
+        frame_mode, first_frame, last_frame,
         start_frame, padding,
         bit_depth, compression,
         working_colorspace, raw_data, output_colorspace, embed_workflow,
@@ -1246,6 +1304,31 @@ class AMImageWrite:
             float(frame_rate) if float(frame_rate) > 0 else None
         )
 
+        # Frame-numbering decision — resolved once, applied per frame via
+        # `_frame_target`. Mirrors the IMAGE branch's three-way logic so a
+        # token-less path (e.g. a Browse-picked concrete file) still gets a
+        # per-frame `.NNNNN` suffix when `use_frame_numbers` is on. Without
+        # this the video branch's bare `expand_frame_pattern` is a no-op on
+        # token-less paths and every frame overwrites the same file.
+        has_token = _has_frame_token(full_path_template)
+        if not use_frame_numbers and not has_token:
+            log.warning(
+                "[am_vfx_tools/write_image] VIDEO streaming: use_frame_numbers="
+                "False and no frame token in path — every frame writes to %r; "
+                "only the last frame survives.",
+                full_path_template,
+            )
+
+        # Frame-range window (frame_mode / first_frame / last_frame) —
+        # streaming analogue of the IMAGE branch's `_slice_indices`. The
+        # decode loops skip source frames outside `[win_lo, win_hi]` and
+        # the OUTPUT number is `start_frame + (i - win_lo)`, so the first
+        # written frame always lands on `start_frame`. `win_hi=None` =
+        # open-ended (all / range with last_frame=-1).
+        win_lo, win_hi = _video_frame_window(
+            frame_mode, int(first_frame), int(last_frame),
+        )
+
         written: list[str] = []
         out_width = out_height = 0
         is_lazy_transform = isinstance(video, video_lazy.LazyVideoTransform)
@@ -1264,13 +1347,18 @@ class AMImageWrite:
         try:
             if is_lazy_transform:
                 for i, (np_frame, _alpha) in enumerate(video.iter_frames()):
+                    if win_hi is not None and i > win_hi:
+                        break
+                    if i < win_lo:
+                        continue
                     # The lazy chain already applied any cascaded
                     # transforms (Reformat, etc.). This node's own
                     # reformat / OCIO / dtype still apply in
                     # _write_streamed_frame (per the node's widgets) —
                     # they compose on top of the lazy chain's transforms.
-                    target = sequence.expand_frame_pattern(
-                        full_path_template, int(start_frame) + i, padding,
+                    target = _frame_target(
+                        full_path_template, int(start_frame) + (i - win_lo), padding,
+                        use_frame_numbers=use_frame_numbers, has_token=has_token,
                     )
                     np_frame = np_frame.astype(np.float32, copy=False)
                     wrote_target = self._write_streamed_frame(
@@ -1301,12 +1389,17 @@ class AMImageWrite:
                         return self._noop(None)
                     vstream = container.streams.video[0]
                     for i, av_frame in enumerate(container.decode(vstream)):
+                        if win_hi is not None and i > win_hi:
+                            break
+                        if i < win_lo:
+                            continue
                         np_frame = (
                             av_frame.to_ndarray(format="rgb24").astype(np.float32)
                             / 255.0
                         )
-                        target = sequence.expand_frame_pattern(
-                            full_path_template, int(start_frame) + i, padding,
+                        target = _frame_target(
+                            full_path_template, int(start_frame) + (i - win_lo), padding,
+                            use_frame_numbers=use_frame_numbers, has_token=has_token,
                         )
                         wrote_target = self._write_streamed_frame(
                             np_frame, target,
@@ -1332,12 +1425,17 @@ class AMImageWrite:
                 images_tensor = components.images
                 n_frames = int(images_tensor.shape[0])
                 for i in range(n_frames):
+                    if win_hi is not None and i > win_hi:
+                        break
+                    if i < win_lo:
+                        continue
                     np_frame = images_tensor[i].detach().cpu().numpy()
                     if np_frame.shape[-1] >= 4:
                         np_frame = np.ascontiguousarray(np_frame[..., :3])
                     np_frame = np_frame.astype(np.float32, copy=False)
-                    target = sequence.expand_frame_pattern(
-                        full_path_template, int(start_frame) + i, padding,
+                    target = _frame_target(
+                        full_path_template, int(start_frame) + (i - win_lo), padding,
+                        use_frame_numbers=use_frame_numbers, has_token=has_token,
                     )
                     wrote_target = self._write_streamed_frame(
                         np_frame, target,
