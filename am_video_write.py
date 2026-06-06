@@ -150,6 +150,50 @@ def _strip_codec_prefix(value: str) -> str:
     return canon.split("/", 1)[1] if "/" in canon else canon
 
 
+# Recognised video-container extensions — used by the VIDEO passthrough
+# branch to decide whether the resolved output path already carries a
+# container ext that ``VideoInput.save_to(format=AUTO)`` can mux to.
+# Superset of the `ext` dropdown (mov/mp4/mkv/webm) plus the other
+# containers the backend's CODECS table references (mxf) and common aliases.
+_VIDEO_CONTAINER_EXTS = {"mov", "mp4", "mkv", "webm", "mxf", "m4v", "avi"}
+
+
+def _ensure_container_ext(path: str, ext: str) -> str:
+    """Guarantee *path* ends in a real video-container extension.
+
+    ``VideoInput.save_to(format=AUTO)`` infers the output container from
+    the path's suffix; PyAV raises ``Could not determine output format``
+    when the suffix is missing or isn't a known muxer. If *path* already
+    ends in a recognised container ext it's trusted as-is (a deliberate
+    ``.mov`` survives even if the `ext` widget is left at the `mp4`
+    default); otherwise ``.{ext}`` is appended — never replacing existing
+    name parts, so ``shot.v001`` → ``shot.v001.mp4``.
+    """
+    cur = os.path.splitext(path)[1].lstrip(".").lower()
+    if cur in _VIDEO_CONTAINER_EXTS:
+        return path
+    return f"{path}.{ext}"
+
+
+def _container_for_ext(ext: str):
+    """Map the `ext` widget to an explicit ComfyUI ``VideoContainer`` when
+    one exists, else ``AUTO``.
+
+    ComfyUI only exposes ``AUTO`` and ``MP4`` today, so ``mp4`` becomes an
+    explicit, inference-free ``MP4`` — robust against PyAV's "could not
+    determine output format" error (raised when AUTO has no usable path
+    suffix, or when a ``VideoFromFile`` reuses libav's combined demuxer
+    name ``mov,mp4,m4a,...`` as an output muxer name). ``mov``/``mkv``/
+    ``webm`` fall back to ``AUTO``, where ``VideoFromFile`` remuxes by the
+    (now-guaranteed) path extension. Returns ``None`` when the native
+    VIDEO type isn't importable (callers guard that before reaching here).
+    """
+    if not _VIDEO_TYPE_AVAILABLE:
+        return None
+    vc = _ComfyTypes.VideoContainer
+    return vc.MP4 if ext and ext.lower() == "mp4" else vc.AUTO
+
+
 def _codec_choices():
     """Container-prefixed codec dropdown — ``mov/prores``, ``mp4/h264``, ...
 
@@ -632,7 +676,7 @@ class AMVideoWrite:
         if video is not None:
             return self._execute_video_passthrough(
                 video=video,
-                file_path=file_path, use_batch=use_batch,
+                file_path=file_path, ext=ext, use_batch=use_batch,
                 embed_workflow=embed_workflow,
                 show_preview=show_preview,
                 seed=seed, prompt=prompt,
@@ -1117,7 +1161,7 @@ class AMVideoWrite:
     # placeholders; metadata sockets are probed cheaply from the source.
 
     def _execute_video_passthrough(
-        self, *, video, file_path, use_batch, embed_workflow,
+        self, *, video, file_path, ext, use_batch, embed_workflow,
         show_preview, seed, prompt,
         extra_pnginfo,
     ):
@@ -1163,7 +1207,21 @@ class AMVideoWrite:
         else:
             meta_dict = None
 
-        # 4. Make parent dir (save_to → av.open doesn't mkdir).
+        # 4. Guarantee the output path carries a real container extension.
+        #    `save_to(format=AUTO)` infers the muxer from the path suffix;
+        #    a Manual `file_path` without an extension (or with a non-
+        #    container one like `_v001`) makes PyAV raise "Could not
+        #    determine output format". `_ensure_container_ext` appends
+        #    `.{ext}` when needed.
+        original_path = full_path
+        full_path = _ensure_container_ext(full_path, ext)
+        if full_path != original_path:
+            log.info(
+                "[am_vfx_tools/write_video] VIDEO passthrough: output path had "
+                "no container extension — appended .%s → %s", ext, full_path,
+            )
+
+        # 5. Make parent dir (save_to → av.open doesn't mkdir).
         try:
             os.makedirs(os.path.dirname(full_path), exist_ok=True)
         except OSError as e:
@@ -1173,26 +1231,32 @@ class AMVideoWrite:
             )
             return self._noop(None)
 
-        # 5. The save_to() call — packet-copy on VideoFromFile (AUTO/AUTO),
-        #    normal encode on VideoFromComponents. Catch ValueError from
-        #    the VideoFromComponents MP4/H264-only constraint and log it;
-        #    we don't fall back to the IMAGE-batch encoder here because
-        #    that would defeat the lazy-skip we already triggered (artist
-        #    expectation: "I wired VIDEO → no IMAGE work"). The artist
-        #    can rewire to the IMAGE input if they hit the constraint.
+        # 6. The save_to() call — packet-copy on VideoFromFile, normal
+        #    encode on VideoFromComponents. For `ext=mp4` we pass an
+        #    explicit `VideoContainer.MP4` rather than AUTO so the muxer is
+        #    chosen deterministically (no path-suffix / combined-demuxer-
+        #    name inference); other containers use AUTO against the now-
+        #    guaranteed path extension. `codec=AUTO` preserves the cheap
+        #    stream-copy remux for VideoFromFile. We don't fall back to the
+        #    IMAGE-batch encoder on the VideoFromComponents MP4/H264-only
+        #    constraint — that would defeat the lazy-skip we already
+        #    triggered (artist expectation: "I wired VIDEO → no IMAGE
+        #    work"); the artist can rewire to IMAGE if they hit it.
         try:
             video.save_to(
                 full_path,
-                format=_ComfyTypes.VideoContainer.AUTO,
+                format=_container_for_ext(ext),
                 codec=_ComfyTypes.VideoCodec.AUTO,
                 metadata=meta_dict,
             )
         except ValueError as e:
             log.warning(
                 "[am_vfx_tools/write_video] VIDEO passthrough: save_to raised "
-                "ValueError (%s). This is typically the VideoFromComponents "
-                "MP4/H264-only constraint. Rewire the IMAGE input instead, "
-                "or change `ext` to mp4.", e,
+                "ValueError (%s) writing %r. A non-MP4 `ext` with a "
+                "VideoFromComponents source hits ComfyUI's MP4/H264-only "
+                "encode constraint — set `ext=mp4`, or rewire the IMAGE "
+                "input to use the full codec/container encoder.",
+                e, full_path,
             )
             return self._noop(None)
         except Exception as e:  # noqa: BLE001 — log + soft fail
