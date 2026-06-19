@@ -21,9 +21,16 @@ Design choices (see media-io-sync-rule.md invariants 15a–15e):
   a color-managed step.
 * **Centering is implicit.** Nuke's `center` checkbox is dropped — we
   always center on `fit` (letterbox) and `none` (crop/pad).
-* **No flip / flop / turn / clamp / black-outside / preserve-bbox.**
-  These are dropped per the design discussion; reformat is a
-  geometric utility, not a full Nuke Reformat replacement.
+* **No flip / flop / turn / black-outside / preserve-bbox.** These are
+  dropped per the design discussion; reformat is a geometric utility,
+  not a full Nuke Reformat replacement.
+* **Range-preserving resample.** Cubic / Lanczos kernels have negative
+  lobes and overshoot at high-contrast edges, inventing pixels below the
+  source min (negative) or above the source max. Every ``cv2.resize`` is
+  wrapped so the output is clamped back to the range actually present in
+  the input frame — see :func:`_resize_range_preserving`. This is NOT a
+  fixed [0,1] clamp (that would crush legitimate scene-linear HDR
+  highlights); it only removes ringing the filter itself introduced.
 """
 from __future__ import annotations
 
@@ -266,6 +273,43 @@ def _filter_to_cv2(filter_name: str):
     }.get(filter_name, cv2.INTER_CUBIC)
 
 
+def _resize_range_preserving(frame: np.ndarray, size: Tuple[int, int], interp) -> np.ndarray:
+    """``cv2.resize`` that cannot introduce out-of-range pixels.
+
+    Cubic (``INTER_CUBIC``) and Lanczos (``INTER_LANCZOS4``) are
+    convolution kernels with negative lobes: at a high-contrast edge or an
+    isolated bright pixel they overshoot, producing output values *below*
+    the source minimum (often negative) and *above* the source maximum.
+    Those values were never in the image. Left unclamped they corrupt any
+    downstream consumer that assumes a bounded signal — most visibly a
+    video model's VAE encode, where a negative pixel maps outside the
+    encoder's ``[-1, 1]`` normalisation and decodes as splotchy
+    firefly/dot artifacts.
+
+    The fix clamps the resampled result back to ``[frame.min, frame.max]``
+    — the range that was actually present before resizing:
+
+    * **HDR-safe.** The ceiling is the source's own max, so legitimate
+      scene-linear highlights above 1.0 survive untouched (a hard ``[0,1]``
+      clamp would crush them). It only removes the ringing overshoot.
+    * **No-op for non-ringing filters.** ``INTER_NEAREST`` / ``INTER_LINEAR``
+      / ``INTER_AREA`` are bounded by construction, so the clamp changes
+      nothing for them.
+
+    ``size`` is cv2's ``(W, H)``. A global (not per-channel) min/max is used
+    deliberately: the damaging values are sub-zero / super-max overshoot,
+    which the global bound catches, and it stays robust to whatever rank
+    ``cv2.resize`` returns for the channel count at hand.
+    """
+    import cv2  # type: ignore
+    out = cv2.resize(frame, size, interpolation=interp)
+    lo = float(frame.min())
+    hi = float(frame.max())
+    # in-place clamp; `out` is fp32 from cv2 (frame is fp32 by contract).
+    np.clip(out, lo, hi, out=out)
+    return out
+
+
 # ---------------------------------------------------------------------------
 #  Public API
 # ---------------------------------------------------------------------------
@@ -389,11 +433,11 @@ def _reformat_frame(
 
     if mode == MODE_SCALE:
         # Uniform scale; resize_type doesn't apply (no aspect mismatch).
-        return cv2.resize(frame, (out_w, out_h), interpolation=interp)
+        return _resize_range_preserving(frame, (out_w, out_h), interp)
 
     # mode == MODE_TO_BOX — resize_type decides how src maps into (out_w, out_h).
     if resize_type == RESIZE_DISTORT:
-        return cv2.resize(frame, (out_w, out_h), interpolation=interp)
+        return _resize_range_preserving(frame, (out_w, out_h), interp)
 
     if resize_type == RESIZE_NONE:
         # Nuke "crop": no scale, place src centered in the (out_h, out_w) canvas.
@@ -416,7 +460,7 @@ def _reformat_frame(
 
     new_w = max(1, int(round(src_w * s)))
     new_h = max(1, int(round(src_h * s)))
-    scaled = cv2.resize(frame, (new_w, new_h), interpolation=interp)
+    scaled = _resize_range_preserving(frame, (new_w, new_h), interp)
 
     # `width` and `height` modes use the scaled image as-is — let it overflow
     # or leave gaps relative to the box; that's the documented Nuke behavior.
